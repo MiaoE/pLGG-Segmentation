@@ -60,7 +60,7 @@ def _show_box(box, ax):
 """Bounding box prompting SAM segmentation functions"""
 def sam_segmentation_with_bbox(predictor, image, bbox):
     '''expects image to be 3 channels (W, H, 3)
-    bbox in format [x,y,x,y]'''
+    bbox in format [x,y,x,y] (single array)'''
     predictor.set_image(image)
     masks, _, _ = predictor.predict(box=bbox[None, :], multimask_output=False)
     '''output format

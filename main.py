@@ -12,6 +12,7 @@ from datetime import datetime
 from segment_anything import SamPredictor, SamAutomaticMaskGenerator, sam_model_registry
 
 from sam_seg import get_predictor, get_mask_generator, sam_segmentation_with_bbox, show_segmentation_with_bbox, save_segmentation_with_bbox, sam_segmentation_raw, show_segmentation_raw, save_segmentation_raw
+from medsam_seg import get_medsam_predictor, image_preprocessing, medsam, show_medsam_seg, save_medsam_seg
 from evaluations import iou_score, dice_coefficient_score
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -66,6 +67,14 @@ def run_sam_seg_layer_with_bbox(mri, layer, bbox):
     image = _mri_normalize_layer(mri[:, :, layer])
     mask = sam_segmentation_with_bbox(predictor, image, bbox)
     show_segmentation_with_bbox(image, mask, bbox)
+    return mask
+
+def run_medsam_seg_layer(mri, layer, bbox):
+    medsam_model = get_medsam_predictor(device)
+    image = _mri_normalize_layer(mri[:, :, layer])
+    img, box, h, w = image_preprocessing(image, bbox, device)
+    mask = medsam(medsam_model, img, box, h, w)
+    # show_medsam_seg(image, mask, bbox)
     return mask
 
 """ MRI OPERATIONS """
