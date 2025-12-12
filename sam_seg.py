@@ -57,6 +57,13 @@ def _show_box(box, ax):
     w, h = box[2] - box[0], box[3] - box[1]
     ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor='green', facecolor=(0,0,0,0), lw=2))  
 
+def _show_points(coords, labels, ax, marker_size=200):
+    pos_points = coords[labels==1]
+    neg_points = coords[labels==0]
+    ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='*', s=marker_size, edgecolor='white', linewidth=1)
+    ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1)
+    
+
 """Bounding box prompting SAM segmentation functions"""
 def sam_segmentation_with_bbox(predictor, image, bbox):
     '''expects image to be 3 channels (W, H, 3)
@@ -77,6 +84,7 @@ def show_segmentation_with_bbox(image, mask, bbox):
     plt.imshow(image)
     _show_mask(mask[0], plt.gca())
     _show_box(bbox, plt.gca())
+    plt.title(f"SAM Segmentation with Bounding Box Prompt")
     plt.axis('off')
     plt.show()
 
@@ -84,6 +92,38 @@ def save_segmentation_with_bbox(image, mask, bbox, folder, image_name):
     plt.imshow(image)
     _show_mask(mask[0], plt.gca())
     _show_box(bbox, plt.gca())
+    plt.title(f"SAM Segmentation with Bounding Box Prompt")
+    plt.axis('off')
+    os.makedirs(os.path.join('output', folder), exist_ok=True)
+    plt.savefig(os.path.join('output', folder, f'{image_name}.png'))
+
+"""Point prompting SAM segmentation functions"""
+def sam_segmentation_with_point(predictor, image, point, label):
+    '''
+    Docstring for sam_segmentation_with_point
+    
+    :param predictor: SAM predictor object
+    :param image: the MRI layer image
+    :param point: numpy array in [[x, y]] format (double array)
+    :param label: numpy single element array, 1 - foreground point, 0 - background point 
+    '''
+    predictor.set_image(image)
+    masks, _, _ = predictor.predict(point_coords=point, point_labels=label, multimask_output=False)
+    return masks
+
+def show_segmentation_with_point(image, mask, point, label):
+    plt.imshow(image)
+    _show_mask(mask[0], plt.gca())
+    _show_points(point, label, plt.gca())
+    plt.title(f"SAM Segmentation with Point Prompt")
+    plt.axis('off')
+    plt.show()
+
+def save_segmentation_with_point(image, mask, point, label, folder, image_name):
+    plt.imshow(image)
+    _show_mask(mask[0], plt.gca())
+    _show_points(point, label, plt.gca())
+    plt.title(f"SAM Segmentation with Point Prompt")
     plt.axis('off')
     os.makedirs(os.path.join('output', folder), exist_ok=True)
     plt.savefig(os.path.join('output', folder, f'{image_name}.png'))
