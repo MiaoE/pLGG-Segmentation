@@ -20,22 +20,40 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 """ LAYER OPERATIONS """
 
 def _show_mri_layer(image, layer):
-    '''Data (image) Visualization (1 channel)'''
+    '''
+    Data (normalized image) Visualization (1 channel)
+    
+    :param image: Normalized MRI
+    :param layer: layer #
+    '''
     plt.style.use('default')
-    plt.imshow(image[:, :, layer], cmap='gray')
+    plt.imshow(image[:, :, layer], cmap='gray', vmin=0, vmax=1)
     plt.show()
 
 def _show_mri_rgb_layer(image, layer):
-    '''Data (image) Visualization (3 channels)'''
+    '''
+    Data (image) Visualization (3 channels)
+    
+    :param image: MRI
+    :param layer: layer #
+    '''
     plt.style.use('default')
     image_layer = image[:, :, layer]
     modified_layer = _mri_normalize_layer(image_layer)
-    plt.imshow(modified_layer)
+    plt.imshow(modified_layer, vmin=0, vmax=1)
     plt.show()
 
 def _save_mri_layer(image, layer, folder, image_name):
+    '''
+    Saves the grayscale MRI layer image
+    
+    :param image: Normalized MRI
+    :param layer: layer #
+    :param folder: Description
+    :param image_name: Description
+    '''
     plt.style.use('default')
-    plt.imshow(image[:, :, layer], cmap='gray')
+    plt.imshow(image[:, :, layer], cmap='gray', vmin=0, vmax=1)
     os.makedirs(os.path.join('output', folder), exist_ok=True)
     plt.savefig(os.path.join('output', folder, f'{image_name}.png'))
 
@@ -45,9 +63,6 @@ def _mri_normalize_layer(image_layer):
     norm_layer = (image_layer - img_min) / (img_max - img_min)
     rgb_layer = np.repeat(norm_layer[..., np.newaxis], 3, axis=2)
     return rgb_layer
-
-def _save_seg_layer_raw(image, masks, folder, image_name):
-    save_segmentation_raw(image, masks, folder, image_name)
 
 def run_sam_seg_layer_raw(mri, layer):
     '''
@@ -66,7 +81,7 @@ def run_sam_seg_layer_with_bbox(mri, layer, bbox):
     predictor = get_predictor()
     image = _mri_normalize_layer(mri[:, :, layer])
     mask = sam_segmentation_with_bbox(predictor, image, bbox)
-    show_segmentation_with_bbox(image, mask, bbox)
+    # show_segmentation_with_bbox(image, mask, bbox)
     return mask
 
 def run_medsam_seg_layer(mri, layer, bbox):
@@ -78,6 +93,20 @@ def run_medsam_seg_layer(mri, layer, bbox):
     return mask
 
 """ MRI OPERATIONS """
+
+def get_mri(path, ret_type:str='map'):
+    '''
+    Docstring for get_mri
+    
+    :param path: path to .nii / .nii.gz file
+    :param ret_type: 'map' for a mapping of the mri file, or 'load' to load the mri directly to RAM
+    '''
+    if ret_type == 'map':
+        return nib.load(path).dataobj
+    elif ret_type == 'load':
+        return nib.load(path).get_fdata()
+    else:
+        raise ValueError(f'ret_type must be \'map\' or \'load\', but given {ret_type}')
 
 def _mri_normalize(mri):
     '''Normalizes an MRI entirely to value range [0, 1]'''
@@ -92,7 +121,7 @@ def show_mri(mri):
     :param mri: normalized MRI as numpy array
     """
     fig, ax = plt.subplots()
-    im = ax.imshow(mri[:, :, 0], cmap='gray', animated=True)
+    im = ax.imshow(mri[:, :, 0], cmap='gray', animated=True, vmin=0, vmax=1)
     title = ax.set_title("Slice 0")
     # title = ax.text(0.5, 1.05, "Slice 0",
     #                 ha='center', va='top',
