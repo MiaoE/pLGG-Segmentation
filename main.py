@@ -198,8 +198,8 @@ def sam_seg_main():
     parent_folder = 'data'
     instance_folder = [name for name in os.listdir(parent_folder) if os.path.isdir(os.path.join(parent_folder, name))]
     # TODO: recursively loop through each instance folder until lowest level
-    ground_truth_file = os.path.join(parent_folder, instance_folder, f'{instance_folder}.nii.gz')
-    flair_file = os.path.join(parent_folder, instance_folder, f'{instance_folder}.nii.gz')
+    ground_truth_file = os.path.join(parent_folder, instance_folder, f'{instance_folder}-seg.nii.gz')
+    flair_file = os.path.join(parent_folder, instance_folder, f'{instance_folder}-t2f.nii.gz')
     # TODO: if file path contains .nii.gz then use get_mri() for both gt_img and mri_img; 
     # TODO: if folder contains preprocessed_FLAIR.npy and preprocessed_segmentation.npy files then use np.load() directly
     gt_img = get_mri(ground_truth_file)
@@ -251,8 +251,8 @@ def medsam_seg_main():
     parent_folder = 'data'
     instance_folder = [name for name in os.listdir(parent_folder) if os.path.isdir(os.path.join(parent_folder, name))]
     # TODO: recursively loop through each instance folder until lowest level
-    ground_truth_file = os.path.join(parent_folder, instance_folder, f'{instance_folder}.nii.gz')
-    flair_file = os.path.join(parent_folder, instance_folder, f'{instance_folder}.nii.gz')
+    ground_truth_file = os.path.join(parent_folder, instance_folder, f'{instance_folder}-seg.nii.gz')
+    flair_file = os.path.join(parent_folder, instance_folder, f'{instance_folder}-t2f.nii.gz')
     # TODO: if file path contains .nii.gz then use get_mri() for both gt_img and mri_img; 
     # TODO: if folder contains preprocessed_FLAIR.npy and preprocessed_segmentation.npy files then use np.load() directly
     gt_img = get_mri(ground_truth_file)
