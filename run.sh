@@ -1,2 +1,2 @@
 #!/bin/bash
-python main.py -f path/to/root/data/folder
+python main_foundation_model.py -f path/to/root/data/folder
