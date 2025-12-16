@@ -361,4 +361,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
     folder = args.folder
 
+    sam_seg_main(folder)
     medsam_seg_main(folder)
