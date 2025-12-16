@@ -47,11 +47,10 @@ def _show_mask(mask, ax, random_color=False, gt=False):
     if random_color:
         color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
     elif gt:
-        color = np.array([255/255, 255/255, 0/255, 0.4])
+        color = np.array([255/255, 255/255, 0/255, 0.25])
     else:
-        color = np.array([30/255, 144/255, 255/255, 0.6])
-    h, w = mask.shape[-2:]
-    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+        color = np.array([30/255, 144/255, 255/255, 0.4])
+    mask_image = mask[:, :, None] * color[None, None, :]
     ax.imshow(mask_image)
 
 def _show_box(box, ax):
@@ -71,7 +70,9 @@ def sam_segmentation_with_bbox(predictor, image, bbox):
     '''expects image to be 3 channels (W, H, 3)
     bbox in format [x,y,x,y] (single array)'''
     predictor.set_image(image)
-    masks, _, _ = predictor.predict(box=bbox[None, :], multimask_output=False)
+    masks, scores, _ = predictor.predict(box=bbox[None, :], multimask_output=True)
+    best_mask = masks[scores.argmax()]
+    # masks, _, _ = predictor.predict(box=bbox[None, :], multimask_output=False)
     '''output format
     [[[False False False ... False False False]
       [False False False ... False False False]
@@ -80,11 +81,11 @@ def sam_segmentation_with_bbox(predictor, image, bbox):
       [False False False ... False False False]
       [False False False ... False False False]
       [False False False ... False False False]]]'''
-    return masks
+    return best_mask
 
 def show_segmentation_with_bbox(image, mask, gt_mask, bbox):
     plt.imshow(image)
-    _show_mask(mask[0], plt.gca())
+    _show_mask(mask, plt.gca())
     _show_mask(gt_mask, plt.gca(), gt=True)
     _show_box(bbox, plt.gca())
     plt.title(f"SAM Segmentation with Bounding Box Prompt")
@@ -94,7 +95,7 @@ def show_segmentation_with_bbox(image, mask, gt_mask, bbox):
 def save_segmentation_with_bbox(image, mask, gt_mask, bbox, folder, image_name):
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.imshow(image)
-    _show_mask(mask[0], plt.gca())
+    _show_mask(mask, plt.gca())
     _show_mask(gt_mask, plt.gca(), gt=True)
     _show_box(bbox, plt.gca())
     ax.set_title(f"SAM Segmentation with Bounding Box Prompt")

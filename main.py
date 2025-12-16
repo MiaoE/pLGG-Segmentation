@@ -266,7 +266,7 @@ def sam_seg_main(parent_folder):
     ## Get runtime stamp
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
-    predictor = get_predictor()
+    predictor = get_predictor(model='vit_b')
 
     instance_folders = find_instances(parent_folder)
     for instance, folder in instance_folders:
@@ -290,7 +290,7 @@ def sam_seg_main(parent_folder):
                 mask = run_sam_seg_layer_with_bbox(predictor, mri_img, segment_layer, segment_bbox)
 
                 gt_mask = get_ground_truth_layer(gt_img, segment_layer)
-                dice, iou, hdist = dice_coefficient_score(gt_mask, mask[0]), iou_score(gt_mask, mask[0]), hausdorff_dist(gt_mask, mask[0])
+                dice, iou, hdist = dice_coefficient_score(gt_mask, mask), iou_score(gt_mask, mask), hausdorff_dist(gt_mask, mask)
                 segmented += 1
                 dice_total += dice
                 iou_total += iou
