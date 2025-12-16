@@ -43,9 +43,11 @@ def _show_anns(anns):
         img[m] = color_mask
     ax.imshow(img)
 
-def _show_mask(mask, ax, random_color=False):
+def _show_mask(mask, ax, random_color=False, gt=False):
     if random_color:
         color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
+    elif gt:
+        color = np.array([255/255, 255/255, 0/255, 0.4])
     else:
         color = np.array([30/255, 144/255, 255/255, 0.6])
     h, w = mask.shape[-2:]
@@ -80,22 +82,26 @@ def sam_segmentation_with_bbox(predictor, image, bbox):
       [False False False ... False False False]]]'''
     return masks
 
-def show_segmentation_with_bbox(image, mask, bbox):
+def show_segmentation_with_bbox(image, mask, gt_mask, bbox):
     plt.imshow(image)
     _show_mask(mask[0], plt.gca())
+    _show_mask(gt_mask, plt.gca(), gt=True)
     _show_box(bbox, plt.gca())
     plt.title(f"SAM Segmentation with Bounding Box Prompt")
     plt.axis('off')
     plt.show()
 
-def save_segmentation_with_bbox(image, mask, bbox, folder, image_name):
-    plt.imshow(image)
+def save_segmentation_with_bbox(image, mask, gt_mask, bbox, folder, image_name):
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.imshow(image)
     _show_mask(mask[0], plt.gca())
+    _show_mask(gt_mask, plt.gca(), gt=True)
     _show_box(bbox, plt.gca())
-    plt.title(f"SAM Segmentation with Bounding Box Prompt")
-    plt.axis('off')
+    ax.set_title(f"SAM Segmentation with Bounding Box Prompt")
+    ax.axis('off')
     os.makedirs(os.path.join('output', folder), exist_ok=True)
-    plt.savefig(os.path.join('output', folder, f'{image_name}.png'))
+    fig.savefig(os.path.join('output', folder, f'{image_name}.png'))
+    plt.close(fig)
 
 """Point prompting SAM segmentation functions"""
 def sam_segmentation_with_point(predictor, image, point, label):

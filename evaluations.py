@@ -1,4 +1,8 @@
 import numpy as np
+# from scipy.spatial.distance import directed_hausdorff
+from skimage.metrics import hausdorff_distance
+# from monai.metrics import DiceMetric, HausdorffDistanceMetric
+# from medpy.metric.binary import dc, hd95
 
 def dice_coefficient_score(gt: np.ndarray, seg: np.ndarray):
     gt = gt.astype(bool)
@@ -25,3 +29,6 @@ def iou_score(gt: np.ndarray, seg: np.ndarray):
         return 1.0  # define IOU as 1.0
 
     return intersection / (size_gt + size_seg - intersection)
+
+def hausdorff_distance(gt: np.ndarray, seg: np.ndarray):
+    return hausdorff_distance(gt, seg)

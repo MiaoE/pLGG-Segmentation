@@ -8,6 +8,7 @@ from matplotlib.animation import FuncAnimation
 import nibabel as nib
 import cv2
 from datetime import datetime
+from scipy.ndimage import binary_opening
 
 from segment_anything import SamPredictor, SamAutomaticMaskGenerator, sam_model_registry
 
@@ -101,6 +102,33 @@ def run_medsam_seg_layer(mri, layer, bbox):
     # show_medsam_seg(image, mask, bbox)
     return mask
 
+def _get_bbox(image, margin=5, model='sam'):
+    '''
+    Docstring for _get_bbox
+    
+    :param image: Description
+    :param margin: int, the margin/padding around bounding box
+    :param model: 'sam' or 'medsam'
+    '''
+    if not isinstance(margin, int): raise TypeError(f"function _get_bbox param margin must be int, given {type(margin)}")
+
+    denoised_image = binary_opening(image, structure=np.ones((2,2)))
+    ys, xs = np.where(denoised_image)
+
+    if len(xs) == 0:
+        return None
+
+    x_min = xs.min()
+    x_max = xs.max()
+    y_min = ys.min()
+    y_max = ys.max()
+    if model == 'sam':
+        return np.array([x_min-margin, y_min-margin, x_max+margin, y_max+margin])
+    elif model == 'medsam':
+        return np.array([[x_min-margin, y_min-margin, x_max+margin, y_max+margin]])
+    else:
+        raise ValueError(f'function _get_bbox param model must be sam or medsam, given {model}')
+
 """ MRI OPERATIONS """
 
 def get_mri(path, ret_type:str='map'):
@@ -160,3 +188,116 @@ def get_ground_truth_mri(mri):
 def get_ground_truth_layer(mri, layer):
     mri_image = mri[:, :, layer]
     return mri_image.astype(bool)
+
+""" MAIN FUNCTIONS """
+
+def sam_seg_main():
+    ## Get runtime stamp
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    ## Change Variables
+    parent_folder = 'data'
+    instance_folder = [name for name in os.listdir(parent_folder) if os.path.isdir(os.path.join(parent_folder, name))]
+    # TODO: recursively loop through each instance folder until lowest level
+    ground_truth_file = os.path.join(parent_folder, instance_folder, f'{instance_folder}.nii.gz')
+    flair_file = os.path.join(parent_folder, instance_folder, f'{instance_folder}.nii.gz')
+    # TODO: if file path contains .nii.gz then use get_mri() for both gt_img and mri_img; 
+    # TODO: if folder contains preprocessed_FLAIR.npy and preprocessed_segmentation.npy files then use np.load() directly
+    gt_img = get_mri(ground_truth_file)
+    mri_img = get_mri(flair_file)
+
+    _, _, C = mri_img.shape
+
+    dice_total = 0
+    iou_total = 0
+    segmented = 0
+    dice_seg = 0
+    iou_seg = 0
+    scores = {'layers': {}}
+
+    output_path = os.path.join(timestamp, instance_folder)
+
+    for segment_layer in range(C):
+        segment_bbox = _get_bbox(gt_img[:, :, segment_layer].astype(bool))
+        if segment_bbox is not None:
+            mask = run_sam_seg_layer_with_bbox(mri_img, segment_layer, segment_bbox)
+
+            gt_mask = get_ground_truth_layer(gt_img, segment_layer)
+            dice, iou = dice_coefficient_score(gt_mask, mask[0]), iou_score(gt_mask, mask[0])
+            segmented += 1
+            dice_total += dice
+            iou_total += iou
+            dice_seg += dice
+            iou_seg += iou
+            scores['layers'][segment_layer] = {'dice':dice, 'iou':iou}
+            # print(f"Layer {segment_layerr} Dice Score: {dice}\n IoU Score: {iou}")
+
+            # _save_mri_layer(gt_img, segment_layer, timestamp, f'ground_truth_layer{segment_layer}')
+            layer_image = _mri_normalize_layer(mri_img[:, :, segment_layer])
+            save_segmentation_with_bbox(layer_image, mask, gt_mask, segment_bbox, output_path, f'segmentation_layer{segment_layer}')
+        else:
+            dice_total += 1
+            iou_total += 1
+    
+    scores['segmented'] = {'dice' : dice_seg / segmented, 'iou' : iou_seg / segmented}
+    scores['final'] = {'dice' : dice_total / C, 'iou' : iou_total / C}
+    with open(os.path.join('output', output_path, 'scores.json'), 'w') as f:
+        json.dump(scores, f, indent=4)
+
+
+def medsam_seg_main():
+    ## Get runtime stamp
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    ## Change Variables
+    parent_folder = 'data'
+    instance_folder = [name for name in os.listdir(parent_folder) if os.path.isdir(os.path.join(parent_folder, name))]
+    # TODO: recursively loop through each instance folder until lowest level
+    ground_truth_file = os.path.join(parent_folder, instance_folder, f'{instance_folder}.nii.gz')
+    flair_file = os.path.join(parent_folder, instance_folder, f'{instance_folder}.nii.gz')
+    # TODO: if file path contains .nii.gz then use get_mri() for both gt_img and mri_img; 
+    # TODO: if folder contains preprocessed_FLAIR.npy and preprocessed_segmentation.npy files then use np.load() directly
+    gt_img = get_mri(ground_truth_file)
+    mri_img = get_mri(flair_file)
+
+    _, _, C = mri_img.shape
+
+    dice_total = 0
+    iou_total = 0
+    segmented = 0
+    dice_seg = 0
+    iou_seg = 0
+    scores = {'layers': {}}
+
+    output_path = os.path.join(timestamp, instance_folder)
+
+    for segment_layer in range(C):
+        segment_bbox = _get_bbox(gt_img[:, :, segment_layer].astype(bool), model='medsam')
+        if segment_bbox is not None:
+            mask = run_medsam_seg_layer(mri_img, segment_layer, segment_bbox)
+            # print(mask)
+            layer_image = _mri_normalize_layer(mri_img[:, :, segment_layer])
+
+            gt_mask = get_ground_truth_layer(gt_img, segment_layer)
+            dice, iou = dice_coefficient_score(gt_mask, mask), iou_score(gt_mask, mask)
+            segmented += 1
+            dice_total += dice
+            iou_total += iou
+            dice_seg += dice
+            iou_seg += iou
+            scores['layers'][segment_layer] = {'dice':dice, 'iou':iou}
+            # print(f"Dice Score: {dice}\n IoU Score: {iou}")
+
+            # _save_mri_layer(gt_img, segment_layer, timestamp, f'ground_truth_layer{segment_layer}')
+            save_medsam_seg(layer_image, mask, gt_mask, segment_bbox, output_path, f'medsam_segmentation_layer{segment_layer}')
+        else:
+            dice_total += 1
+            iou_total += 1
+
+    scores['segmented'] = {'dice' : dice_seg / segmented, 'iou' : iou_seg / segmented}
+    scores['final'] = {'dice' : dice_total / C, 'iou' : iou_total / C}
+    with open(os.path.join('output', output_path, 'scores.json'), 'w') as f:
+        json.dump(scores, f, indent=4)
+
+
+if __name__ == '__main__':
+    medsam_seg_main()
+    

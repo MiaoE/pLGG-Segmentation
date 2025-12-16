@@ -24,11 +24,13 @@ def get_medsam_predictor(device, model='vit_b'):
 
 """Helper plotting/image displaying functions"""
 
-def _show_mask(mask, ax, random_color=False):
+def _show_mask(mask, ax, random_color=False, gt=False):
     if random_color:
         color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
+    elif gt:
+        color = np.array([255/255, 255/255, 0/255, 0.4])
     else:
-        color = np.array([251/255, 252/255, 30/255, 0.6])
+        color = np.array([30/255, 144/255, 255/255, 0.6])
     h, w = mask.shape[-2:]
     mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
     ax.imshow(mask_image)
@@ -105,7 +107,7 @@ def medsam(model, image, bbox, H, W):
     medsam_seg = _medsam_inference(model, image_embedding, bbox, H, W)
     return medsam_seg
 
-def show_medsam_seg(image, mask, bbox):
+def show_medsam_seg(image, mask, gt_mask, bbox):
     '''
     Docstring for show_medsam_seg
     
@@ -113,17 +115,15 @@ def show_medsam_seg(image, mask, bbox):
     :param mask: MedSAM segmentation result
     :param bbox: Original bounding box numpy array
     '''
-    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-    ax[0].imshow(image)
-    _show_box(bbox[0], ax[0])
-    ax[0].set_title("Input Image and Bounding Box")
-    ax[1].imshow(image)
-    _show_mask(mask, ax[1])
-    _show_box(bbox[0], ax[1])
-    ax[1].set_title("MedSAM Segmentation")
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.imshow(image)
+    _show_box(bbox[0], plt.gca())
+    _show_mask(mask, plt.gca())
+    _show_mask(gt_mask, plt.gca(), gt=True)
+    ax.set_title("MedSAM Segmentation with Bounding Box")
     plt.show()
 
-def save_medsam_seg(image, mask, bbox, folder, image_name):
+def save_medsam_seg(image, mask, gt_mask, bbox, folder, image_name):
     '''
     Docstring for show_medsam_seg
     
@@ -131,14 +131,13 @@ def save_medsam_seg(image, mask, bbox, folder, image_name):
     :param mask: MedSAM segmentation result
     :param bbox: Original bounding box numpy array
     '''
-    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-    ax[0].imshow(image)
-    _show_box(bbox[0], ax[0])
-    ax[0].set_title("Input Image and Bounding Box")
-    ax[1].imshow(image)
-    _show_mask(mask, ax[1])
-    _show_box(bbox[0], ax[1])
-    ax[1].set_title("MedSAM Segmentation")
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.imshow(image)
+    _show_box(bbox[0], plt.gca())
+    _show_mask(mask, plt.gca())
+    _show_mask(gt_mask, plt.gca(), gt=True)
+    ax.set_title("MedSAM Segmentation with Bounding Box")
     
     os.makedirs(os.path.join('output', folder), exist_ok=True)
-    plt.savefig(os.path.join('output', folder, f'{image_name}.png'))
+    fig.savefig(os.path.join('output', folder, f'{image_name}.png'))
+    plt.close(fig)
