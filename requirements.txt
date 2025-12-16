@@ -6,3 +6,4 @@ opencv-python
 scipy
 scikit-learn
 scikit-image
+git+https://github.com/facebookresearch/segment-anything.git

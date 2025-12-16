@@ -30,5 +30,5 @@ def iou_score(gt: np.ndarray, seg: np.ndarray):
 
     return intersection / (size_gt + size_seg - intersection)
 
-def hausdorff_distance(gt: np.ndarray, seg: np.ndarray):
+def hausdorff_dist(gt: np.ndarray, seg: np.ndarray):
     return hausdorff_distance(gt, seg)

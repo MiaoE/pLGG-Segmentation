@@ -11,8 +11,8 @@ pip install --upgrade pip
 echo "Installing base requirements..."
 pip install -r requirements.txt
 
-echo "Installing Segment Anything..."
-pip install git+https://github.com/facebookresearch/segment-anything.git
+# echo "Installing Segment Anything..."
+# pip install git+https://github.com/facebookresearch/segment-anything.git
 
 echo "Cloning MedSAM..."
 if [ ! -d "MedSAM" ]; then

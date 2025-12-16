@@ -1,2 +1,2 @@
 #!/bin/bash
-python main.py
+python main.py -f path/to/root/data/folder
