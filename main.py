@@ -9,7 +9,8 @@ from matplotlib.animation import FuncAnimation
 import nibabel as nib
 import cv2
 from datetime import datetime
-from scipy.ndimage import binary_opening
+from scipy import ndimage
+# from scipy.ndimage import binary_opening
 
 from segment_anything import SamPredictor, SamAutomaticMaskGenerator, sam_model_registry
 
@@ -113,11 +114,16 @@ def _get_bbox(image, margin=5, model='sam'):
     '''
     if not isinstance(margin, int): raise TypeError(f"function _get_bbox param margin must be int, given {type(margin)}")
 
-    denoised_image = binary_opening(image, structure=np.ones((2,2)))
-    ys, xs = np.where(denoised_image)
+    # denoised_image = binary_opening(image, structure=np.ones((2,2)))
+    labelled_image, num = ndimage.label(image)
 
-    if len(xs) == 0:
+    if num == 0:
         return None
+    
+    sizes = ndimage.sum(image, labelled_image, range(1, num+1))
+    largest_label = np.argmax(sizes) + 1
+    denoised_image = (labelled_image == largest_label)
+    ys, xs = np.where(denoised_image)
 
     x_min = xs.min()
     x_max = xs.max()
