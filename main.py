@@ -76,11 +76,11 @@ def run_sam_seg_layer_raw(mri, layer):
     show_segmentation_raw(image, masks)
     # return masks
 
-def run_sam_seg_layer_with_bbox(mri, layer, bbox):
+def run_sam_seg_layer_with_bbox(predictor, mri, layer, bbox):
     '''
     Runs SAM on a single layer and give a bounding box prompt.
     '''
-    predictor = get_predictor()
+    # predictor = get_predictor()
     image = _mri_normalize_layer(mri[:, :, layer])
     mask = sam_segmentation_with_bbox(predictor, image, bbox)
     # show_segmentation_with_bbox(image, mask, bbox)
@@ -95,8 +95,8 @@ def run_sam_seg_layer_with_point(mri, layer, point, label):
     mask = sam_segmentation_with_point(predictor, image, point, label)
     return mask
 
-def run_medsam_seg_layer(mri, layer, bbox):
-    medsam_model = get_medsam_predictor(device)
+def run_medsam_seg_layer(medsam_model, mri, layer, bbox):
+    # medsam_model = get_medsam_predictor(device)
     image = _mri_normalize_layer(mri[:, :, layer])
     img, box, h, w = image_preprocessing(image, bbox, device)
     mask = medsam(medsam_model, img, box, h, w)
@@ -260,6 +260,8 @@ def sam_seg_main(parent_folder):
     ## Get runtime stamp
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
+    predictor = get_predictor()
+
     instance_folders = find_instances(parent_folder)
     for instance, folder in instance_folders:
         mri_img, gt_img = load_image_and_gt(folder)
@@ -279,7 +281,7 @@ def sam_seg_main(parent_folder):
         for segment_layer in range(C):
             segment_bbox = _get_bbox(gt_img[:, :, segment_layer].astype(bool))
             if segment_bbox is not None:
-                mask = run_sam_seg_layer_with_bbox(mri_img, segment_layer, segment_bbox)
+                mask = run_sam_seg_layer_with_bbox(predictor, mri_img, segment_layer, segment_bbox)
 
                 gt_mask = get_ground_truth_layer(gt_img, segment_layer)
                 dice, iou, hdist = dice_coefficient_score(gt_mask, mask[0]), iou_score(gt_mask, mask[0]), hausdorff_dist(gt_mask, mask[0])
@@ -309,6 +311,8 @@ def medsam_seg_main(parent_folder):
     ## Get runtime stamp
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
+    predictor = get_medsam_predictor(device)
+
     instance_folders = find_instances(parent_folder)
     for instance, folder in instance_folders:
         mri_img, gt_img = load_image_and_gt(folder)
@@ -328,7 +332,7 @@ def medsam_seg_main(parent_folder):
         for segment_layer in range(C):
             segment_bbox = _get_bbox(gt_img[:, :, segment_layer].astype(bool), model='medsam')
             if segment_bbox is not None:
-                mask = run_medsam_seg_layer(mri_img, segment_layer, segment_bbox)
+                mask = run_medsam_seg_layer(predictor, mri_img, segment_layer, segment_bbox)
                 # print(mask)
                 layer_image = _mri_normalize_layer(mri_img[:, :, segment_layer])
 
