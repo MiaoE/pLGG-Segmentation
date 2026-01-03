@@ -1,9 +1,11 @@
 numpy
+--index-url https://download.pytorch.org/whl/cu130
 torch
+torchvision
 matplotlib
-nibabel
-opencv-python
-scipy
 scikit-learn
 scikit-image
+scipy
+nibabel
 git+https://github.com/facebookresearch/segment-anything.git
+opencv-python

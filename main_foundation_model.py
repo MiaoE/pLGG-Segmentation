@@ -1,18 +1,18 @@
 ## Input image size: 240x240x155
 import os, json
 import argparse
-import gc
+# import gc
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import nibabel as nib
-import cv2
+# import cv2
 from datetime import datetime
 from scipy import ndimage
 # from scipy.ndimage import binary_opening
 
-from segment_anything import SamPredictor, SamAutomaticMaskGenerator, sam_model_registry
+# from segment_anything import SamPredictor, SamAutomaticMaskGenerator, sam_model_registry
 
 from sam_seg import get_predictor, get_mask_generator, sam_segmentation_with_bbox, show_segmentation_with_bbox, save_segmentation_with_bbox, sam_segmentation_with_point, show_segmentation_with_point, save_segmentation_with_point, sam_segmentation_raw, show_segmentation_raw, save_segmentation_raw
 from medsam_seg import get_medsam_predictor, image_preprocessing, medsam, show_medsam_seg, save_medsam_seg
@@ -230,7 +230,7 @@ def load_image_and_gt(folder):
     for f in files:
         if f.endswith(".nii.gz") and "seg" in f:
             nii_seg = os.path.join(folder, f)
-        elif f.endswith(".nii.gz") and "t2f" in f:
+        elif f.endswith(".nii.gz") and ("t2f" in f or "flair" in f):
             nii_mri = os.path.join(folder, f)
 
     if nii_mri and nii_seg:
@@ -269,6 +269,11 @@ def sam_seg_main(parent_folder):
     predictor = get_predictor(model='vit_b')
 
     instance_folders = find_instances(parent_folder)
+    dice_all = 0
+    iou_all = 0
+    hdist_all = 0
+    count = 0
+    num_layers = 0
     for instance, folder in instance_folders:
         mri_img, gt_img = load_image_and_gt(folder)
 
@@ -297,6 +302,7 @@ def sam_seg_main(parent_folder):
                 hdist_total += hdist
                 dice_seg += dice
                 iou_seg += iou
+                num_layers += 1
                 scores['layers'][segment_layer] = {'dice':dice, 'iou':iou, 'hausdorff': hdist}
                 # print(f"Layer {segment_layerr} Dice Score: {dice}\n IoU Score: {iou}")
 
@@ -309,8 +315,16 @@ def sam_seg_main(parent_folder):
         
         scores['segmented'] = {'dice' : dice_seg / segmented, 'iou' : iou_seg / segmented, 'hausdorff': hdist_total / segmented}
         scores['final'] = {'dice' : dice_total / C, 'iou' : iou_total / C, 'hausdorff': hdist_total / C}
+
+        dice_all += dice_seg / segmented
+        iou_all += iou_seg / segmented
+        hdist_all += hdist_total / segmented
+        count += 1
         with open(os.path.join('output', output_path, 'scores.json'), 'w') as f:
             json.dump(scores, f, indent=4)
+    results = {'DICE' : dice_all / count, 'IOU' : iou_all / count, 'Hausdorff' : hdist_all / count, 'data_size' : count, 'num_layers_segmented' : num_layers}
+    with open(os.path.join("output", f"{timestamp}-SAM", 'results.json'), 'w') as r:
+        json.dump(results, r, indent=4)
 
 
 def medsam_seg_main(parent_folder):
@@ -320,6 +334,11 @@ def medsam_seg_main(parent_folder):
     predictor = get_medsam_predictor(device)
 
     instance_folders = find_instances(parent_folder)
+    dice_all = 0
+    iou_all = 0
+    hdist_all = 0
+    count = 0
+    num_layers = 0
     for instance, folder in instance_folders:
         mri_img, gt_img = load_image_and_gt(folder)
 
@@ -350,6 +369,7 @@ def medsam_seg_main(parent_folder):
                 hdist_total += hdist
                 dice_seg += dice
                 iou_seg += iou
+                num_layers += 1
                 scores['layers'][segment_layer] = {'dice':dice, 'iou':iou, 'hausdorff': hdist}
                 # print(f"Dice Score: {dice}\n IoU Score: {iou}")
 
@@ -361,8 +381,16 @@ def medsam_seg_main(parent_folder):
 
         scores['segmented'] = {'dice' : dice_seg / segmented, 'iou' : iou_seg / segmented, 'hausdorff': hdist_total / segmented}
         scores['final'] = {'dice' : dice_total / C, 'iou' : iou_total / C, 'hausdorff': hdist_total / C}
+
+        dice_all += dice_seg / segmented
+        iou_all += iou_seg / segmented
+        hdist_all += hdist_total / segmented
+        count += 1
         with open(os.path.join('output', output_path, 'scores.json'), 'w') as f:
             json.dump(scores, f, indent=4)
+    results = {'DICE' : dice_all / count, 'IOU' : iou_all / count, 'Hausdorff' : hdist_all / count, 'data_size' : count, 'num_layers_segmented' : num_layers}
+    with open(os.path.join("output", f"{timestamp}-MedSAM", 'results.json'), 'w') as r:
+        json.dump(results, r, indent=4)
 
 
 if __name__ == '__main__':
