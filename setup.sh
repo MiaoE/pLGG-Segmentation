@@ -2,7 +2,7 @@
 set -e  # exit on error
 
 module avail python
-module load python/3.12
+module load python/3.11.3_torch_gpu
 python --version
 
 # cd into project/work directory
@@ -17,6 +17,7 @@ echo "Upgrading pip..."
 pip install --upgrade pip
 
 echo "Change Symlink of python cache"
+ln -s /lab/storage/path/cache /local/account/.cache #or ~/.cache
 
 echo "Installing base requirements..."
 pip install -r requirements.txt

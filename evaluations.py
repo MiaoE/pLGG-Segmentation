@@ -1,6 +1,7 @@
 import numpy as np
-# from scipy.spatial.distance import directed_hausdorff
+from scipy.spatial.distance import cdist
 from skimage.metrics import hausdorff_distance
+from scipy.ndimage import binary_erosion
 # from monai.metrics import DiceMetric, HausdorffDistanceMetric
 # from medpy.metric.binary import dc, hd95
 
@@ -32,3 +33,42 @@ def iou_score(gt: np.ndarray, seg: np.ndarray):
 
 def hausdorff_dist(gt: np.ndarray, seg: np.ndarray):
     return hausdorff_distance(gt, seg)
+
+def hd95(gt: np.ndarray, seg: np.ndarray, voxel_spacing=None):
+    """
+    @param voxel_spacing: Pixel spacing (e.g., (1.0, 1.0)). If None, spacing = 1.
+    @type voxel_spacing: tuple or None
+    
+    @return HD95 distance, 0.0 if both masks are empty, np.inf if one mask if empty
+    @rtype: float
+    """
+    gt = gt.astype(bool)
+    seg = seg.astype(bool)
+
+    # Handle empty cases
+    if not gt.any() and not seg.any():
+        return 0.0
+    if gt.any() != seg.any():
+        return np.inf
+
+    if voxel_spacing is None:
+        voxel_spacing = np.ones(gt.ndim)
+
+    # Extract surfaces
+    gt_surface = gt ^ binary_erosion(gt)
+    seg_surface = seg ^ binary_erosion(seg)
+
+    gt_pts = np.argwhere(gt_surface) * voxel_spacing
+    seg_pts = np.argwhere(seg_surface) * voxel_spacing
+
+    # Compute pairwise distances
+    dists_gt_to_seg = cdist(gt_pts, seg_pts).min(axis=1)
+    dists_seg_to_gt = cdist(seg_pts, gt_pts).min(axis=1)
+
+    # 95th percentile Hausdorff Distance
+    hd95_value = max(
+        np.percentile(dists_gt_to_seg, 95),
+        np.percentile(dists_seg_to_gt, 95)
+    )
+
+    return hd95_value

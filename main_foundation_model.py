@@ -16,7 +16,7 @@ from scipy import ndimage
 
 from sam_seg import get_predictor, get_mask_generator, sam_segmentation_with_bbox, show_segmentation_with_bbox, save_segmentation_with_bbox, sam_segmentation_with_point, show_segmentation_with_point, save_segmentation_with_point, sam_segmentation_raw, show_segmentation_raw, save_segmentation_raw
 from medsam_seg import get_medsam_predictor, image_preprocessing, medsam, show_medsam_seg, save_medsam_seg
-from evaluations import iou_score, dice_coefficient_score, hausdorff_dist
+from evaluations import iou_score, dice_coefficient_score, hausdorff_dist, hd95
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -154,6 +154,7 @@ def get_mri(path, ret_type:str='map'):
 
 def _mri_normalize(mri):
     '''Normalizes an MRI entirely to value range [0, 1]'''
+    mri = np.maximum(mri, 0)
     mri_min, mri_max = np.min(mri), np.max(mri)
     normalized = (mri - mri_min) / (mri_max - mri_min)
     return normalized
@@ -272,6 +273,7 @@ def sam_seg_main(parent_folder):
     dice_all = 0
     iou_all = 0
     hdist_all = 0
+    hd95_all = 0
     count = 0
     num_layers = 0
     for instance, folder in instance_folders:
@@ -282,12 +284,14 @@ def sam_seg_main(parent_folder):
         dice_total = 0
         iou_total = 0
         hdist_total = 0
+        hd95_total = 0
         segmented = 0
         dice_seg = 0
         iou_seg = 0
         scores = {'layers': {}}
 
         output_path = os.path.join(f"{timestamp}-SAM", instance)
+        os.makedirs(os.path.join('output', output_path), exist_ok=True)
 
         for segment_layer in range(C):
             segment_bbox = _get_bbox(gt_img[:, :, segment_layer].astype(bool))
@@ -295,34 +299,41 @@ def sam_seg_main(parent_folder):
                 mask = run_sam_seg_layer_with_bbox(predictor, mri_img, segment_layer, segment_bbox)
 
                 gt_mask = get_ground_truth_layer(gt_img, segment_layer)
-                dice, iou, hdist = dice_coefficient_score(gt_mask, mask), iou_score(gt_mask, mask), hausdorff_dist(gt_mask, mask)
+                dice, iou, hdist, hd95_val = dice_coefficient_score(gt_mask, mask), iou_score(gt_mask, mask), hausdorff_dist(gt_mask, mask), hd95(gt_mask, mask)
                 segmented += 1
                 dice_total += dice
                 iou_total += iou
                 hdist_total += hdist
+                hd95_total += hd95_val
                 dice_seg += dice
                 iou_seg += iou
                 num_layers += 1
-                scores['layers'][segment_layer] = {'dice':dice, 'iou':iou, 'hausdorff': hdist}
+                scores['layers'][segment_layer] = {'dice':dice, 'iou':iou, 'hausdorff': hdist, 'hd95': hd95_val}
                 # print(f"Layer {segment_layerr} Dice Score: {dice}\n IoU Score: {iou}")
 
                 # _save_mri_layer(gt_img, segment_layer, timestamp, f'ground_truth_layer{segment_layer}')
-                layer_image = _mri_normalize_layer(mri_img[:, :, segment_layer])
-                save_segmentation_with_bbox(layer_image, mask, gt_mask, segment_bbox, output_path, f'segmentation_layer{segment_layer}')
+                # layer_image = _mri_normalize_layer(mri_img[:, :, segment_layer])
+                # save_segmentation_with_bbox(layer_image, mask, gt_mask, segment_bbox, output_path, f'segmentation_layer{segment_layer}')
             else:
                 dice_total += 1
                 iou_total += 1
         
-        scores['segmented'] = {'dice' : dice_seg / segmented, 'iou' : iou_seg / segmented, 'hausdorff': hdist_total / segmented}
-        scores['final'] = {'dice' : dice_total / C, 'iou' : iou_total / C, 'hausdorff': hdist_total / C}
+        scores['segmented'] = {'dice' : dice_seg / segmented, 'iou' : iou_seg / segmented, 'hausdorff': hdist_total / segmented, 'hd95': hd95_total / segmented}
+        scores['final'] = {'dice' : dice_total / C, 'iou' : iou_total / C, 'hausdorff': hdist_total / C, 'hd95': hd95_total / C}
 
         dice_all += dice_seg / segmented
         iou_all += iou_seg / segmented
         hdist_all += hdist_total / segmented
+        hd95_all += hd95_total / segmented
         count += 1
+
+        # Free RAM memory
+        del mri_img
+        del gt_img
+
         with open(os.path.join('output', output_path, 'scores.json'), 'w') as f:
             json.dump(scores, f, indent=4)
-    results = {'DICE' : dice_all / count, 'IOU' : iou_all / count, 'Hausdorff' : hdist_all / count, 'data_size' : count, 'num_layers_segmented' : num_layers}
+    results = {'DICE' : dice_all / count, 'IOU' : iou_all / count, 'Hausdorff' : hdist_all / count, 'HD95' : hd95_all / count, 'data_size' : count, 'num_layers_segmented' : num_layers}
     with open(os.path.join("output", f"{timestamp}-SAM", 'results.json'), 'w') as r:
         json.dump(results, r, indent=4)
 
@@ -337,6 +348,7 @@ def medsam_seg_main(parent_folder):
     dice_all = 0
     iou_all = 0
     hdist_all = 0
+    hd95_all = 0
     count = 0
     num_layers = 0
     for instance, folder in instance_folders:
@@ -347,12 +359,14 @@ def medsam_seg_main(parent_folder):
         dice_total = 0
         iou_total = 0
         hdist_total = 0
+        hd95_total = 0
         segmented = 0
         dice_seg = 0
         iou_seg = 0
         scores = {'layers': {}}
 
         output_path = os.path.join(f"{timestamp}-MedSAM", instance)
+        os.makedirs(os.path.join('output', output_path), exist_ok=True)
 
         for segment_layer in range(C):
             segment_bbox = _get_bbox(gt_img[:, :, segment_layer].astype(bool), model='medsam')
@@ -362,33 +376,40 @@ def medsam_seg_main(parent_folder):
                 layer_image = _mri_normalize_layer(mri_img[:, :, segment_layer])
 
                 gt_mask = get_ground_truth_layer(gt_img, segment_layer)
-                dice, iou, hdist = dice_coefficient_score(gt_mask, mask), iou_score(gt_mask, mask), hausdorff_dist(gt_mask, mask)
+                dice, iou, hdist, hd95_val = dice_coefficient_score(gt_mask, mask), iou_score(gt_mask, mask), hausdorff_dist(gt_mask, mask), hd95(gt_mask, mask)
                 segmented += 1
                 dice_total += dice
                 iou_total += iou
                 hdist_total += hdist
+                hd95_total += hd95_val
                 dice_seg += dice
                 iou_seg += iou
                 num_layers += 1
-                scores['layers'][segment_layer] = {'dice':dice, 'iou':iou, 'hausdorff': hdist}
+                scores['layers'][segment_layer] = {'dice':dice, 'iou':iou, 'hausdorff': hdist, 'hd95': hd95_val}
                 # print(f"Dice Score: {dice}\n IoU Score: {iou}")
 
                 # _save_mri_layer(gt_img, segment_layer, timestamp, f'ground_truth_layer{segment_layer}')
-                save_medsam_seg(layer_image, mask, gt_mask, segment_bbox, output_path, f'medsam_segmentation_layer{segment_layer}')
+                # save_medsam_seg(layer_image, mask, gt_mask, segment_bbox, output_path, f'medsam_segmentation_layer{segment_layer}')
             else:
                 dice_total += 1
                 iou_total += 1
 
-        scores['segmented'] = {'dice' : dice_seg / segmented, 'iou' : iou_seg / segmented, 'hausdorff': hdist_total / segmented}
-        scores['final'] = {'dice' : dice_total / C, 'iou' : iou_total / C, 'hausdorff': hdist_total / C}
+        scores['segmented'] = {'dice' : dice_seg / segmented, 'iou' : iou_seg / segmented, 'hausdorff': hdist_total / segmented, 'hd95': hd95_total / segmented}
+        scores['final'] = {'dice' : dice_total / C, 'iou' : iou_total / C, 'hausdorff': hdist_total / C, 'hd95': hd95_total / C}
 
         dice_all += dice_seg / segmented
         iou_all += iou_seg / segmented
         hdist_all += hdist_total / segmented
+        hd95_all += hd95_total / segmented
         count += 1
+
+        # Free RAM memory
+        del mri_img
+        del gt_img
+
         with open(os.path.join('output', output_path, 'scores.json'), 'w') as f:
             json.dump(scores, f, indent=4)
-    results = {'DICE' : dice_all / count, 'IOU' : iou_all / count, 'Hausdorff' : hdist_all / count, 'data_size' : count, 'num_layers_segmented' : num_layers}
+    results = {'DICE' : dice_all / count, 'IOU' : iou_all / count, 'Hausdorff' : hdist_all / count, 'HD95' : hd95_all / count, 'data_size' : count, 'num_layers_segmented' : num_layers}
     with open(os.path.join("output", f"{timestamp}-MedSAM", 'results.json'), 'w') as r:
         json.dump(results, r, indent=4)
 
@@ -396,8 +417,14 @@ def medsam_seg_main(parent_folder):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("-f", "--folder", type=str, required=True, help="Path to root folder of patient data")
+    parser.add_argument("-m", "--model", required=True, help="Foundation model (SAM or MedSAM)")
     args = parser.parse_args()
     folder = args.folder
+    model = args.model
 
-    sam_seg_main(folder)
-    medsam_seg_main(folder)
+    if model.lower() == 'sam':
+        sam_seg_main(folder)
+    elif model.lower() == 'medsam':
+        medsam_seg_main(folder)
+    else:
+        raise ValueError("Argument model is not SAM or MedSAM")
