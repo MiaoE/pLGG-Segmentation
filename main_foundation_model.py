@@ -14,8 +14,8 @@ from scipy import ndimage
 
 # from segment_anything import SamPredictor, SamAutomaticMaskGenerator, sam_model_registry
 
-from sam_seg import get_predictor, get_mask_generator, sam_segmentation_with_bbox, show_segmentation_with_bbox, save_segmentation_with_bbox, sam_segmentation_with_point, show_segmentation_with_point, save_segmentation_with_point, sam_segmentation_raw, show_segmentation_raw, save_segmentation_raw
-from medsam_seg import get_medsam_predictor, image_preprocessing, medsam, show_medsam_seg, save_medsam_seg
+from sam import get_predictor, get_mask_generator, sam_segmentation_with_bbox, show_segmentation_with_bbox, save_segmentation_with_bbox, sam_segmentation_with_point, show_segmentation_with_point, save_segmentation_with_point, sam_segmentation_raw, show_segmentation_raw, save_segmentation_raw
+from medsam import get_medsam_predictor, image_preprocessing, medsam, show_medsam_seg, save_medsam_seg
 from evaluations import iou_score, dice_coefficient_score, hausdorff_dist, hd95
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'

@@ -9,3 +9,5 @@ scipy
 nibabel
 git+https://github.com/facebookresearch/segment-anything.git
 opencv-python
+tensorflow
+pytorch3dunet

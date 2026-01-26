@@ -70,6 +70,16 @@ if purpose == "boxplot":
 
     for metric, ylabel in metrics.items():
         plt.figure(figsize=(8, 5))
+        plt.rcParams.update({
+            "font.family": "serif",
+            "font.serif": ["Latin Modern Roman","Times New Roman", "Times", "DejaVu Serif"],
+            # "mathtext.fontset": "cm",
+            "axes.titlesize": 14,
+            "axes.labelsize": 12,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            #"text.usetex": True
+        })
 
         sns.boxplot(
             data=df,
