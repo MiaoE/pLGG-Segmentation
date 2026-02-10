@@ -16,7 +16,7 @@ from scipy import ndimage
 
 from sam import get_predictor, get_mask_generator, sam_segmentation_with_bbox, show_segmentation_with_bbox, save_segmentation_with_bbox, sam_segmentation_with_point, show_segmentation_with_point, save_segmentation_with_point, sam_segmentation_raw, show_segmentation_raw, save_segmentation_raw
 from medsam import get_medsam_predictor, image_preprocessing, medsam, show_medsam_seg, save_medsam_seg
-from evaluations import iou_score, dice_coefficient_score, hausdorff_dist, hd95
+from evaluations import iou_score, dice_coefficient_score, hausdorff, hd95
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -104,7 +104,7 @@ def run_medsam_seg_layer(medsam_model, mri, layer, bbox):
     # show_medsam_seg(image, mask, bbox)
     return mask
 
-def _get_bbox(image, margin=5, model='sam'):
+def get_bbox(image, margin=5, model='sam'):
     '''
     Docstring for _get_bbox
     
@@ -152,7 +152,7 @@ def get_mri(path, ret_type:str='map'):
     else:
         raise ValueError(f'ret_type must be \'map\' or \'load\', but given {ret_type}')
 
-def _mri_normalize(mri):
+def mri_normalize(mri):
     '''Normalizes an MRI entirely to value range [0, 1]'''
     mri = np.maximum(mri, 0)
     mri_min, mri_max = np.min(mri), np.max(mri)
@@ -294,12 +294,12 @@ def sam_seg_main(parent_folder):
         os.makedirs(os.path.join('output', output_path), exist_ok=True)
 
         for segment_layer in range(C):
-            segment_bbox = _get_bbox(gt_img[:, :, segment_layer].astype(bool))
+            segment_bbox = get_bbox(gt_img[:, :, segment_layer].astype(bool))
             if segment_bbox is not None:
                 mask = run_sam_seg_layer_with_bbox(predictor, mri_img, segment_layer, segment_bbox)
 
                 gt_mask = get_ground_truth_layer(gt_img, segment_layer)
-                dice, iou, hdist, hd95_val = dice_coefficient_score(gt_mask, mask), iou_score(gt_mask, mask), hausdorff_dist(gt_mask, mask), hd95(gt_mask, mask)
+                dice, iou, hdist, hd95_val = dice_coefficient_score(gt_mask, mask), iou_score(gt_mask, mask), hausdorff(gt_mask, mask), hd95(gt_mask, mask)
                 segmented += 1
                 dice_total += dice
                 iou_total += iou
@@ -369,14 +369,14 @@ def medsam_seg_main(parent_folder):
         os.makedirs(os.path.join('output', output_path), exist_ok=True)
 
         for segment_layer in range(C):
-            segment_bbox = _get_bbox(gt_img[:, :, segment_layer].astype(bool), model='medsam')
+            segment_bbox = get_bbox(gt_img[:, :, segment_layer].astype(bool), model='medsam')
             if segment_bbox is not None:
                 mask = run_medsam_seg_layer(predictor, mri_img, segment_layer, segment_bbox)
                 # print(mask)
                 layer_image = _mri_normalize_layer(mri_img[:, :, segment_layer])
 
                 gt_mask = get_ground_truth_layer(gt_img, segment_layer)
-                dice, iou, hdist, hd95_val = dice_coefficient_score(gt_mask, mask), iou_score(gt_mask, mask), hausdorff_dist(gt_mask, mask), hd95(gt_mask, mask)
+                dice, iou, hdist, hd95_val = dice_coefficient_score(gt_mask, mask), iou_score(gt_mask, mask), hausdorff(gt_mask, mask), hd95(gt_mask, mask)
                 segmented += 1
                 dice_total += dice
                 iou_total += iou

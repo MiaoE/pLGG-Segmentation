@@ -1,3 +1,7 @@
+import os
+import json
+
+import torch
 import numpy as np
 from scipy.spatial.distance import cdist
 from skimage.metrics import hausdorff_distance
@@ -22,17 +26,33 @@ def iou_score(gt: np.ndarray, seg: np.ndarray):
     gt = gt.astype(bool)
     seg = seg.astype(bool)
     intersection = np.logical_and(seg, gt).sum()
-    size_gt = gt.sum()
-    size_seg = seg.sum()
+    union = np.logical_or(seg, gt).sum()
 
     # Handle empty case
-    if size_gt + size_seg - intersection == 0:
-        return 1.0  # define IOU as 1.0
+    if union == 0:
+        return 1.0
 
-    return intersection / (size_gt + size_seg - intersection)
+    return intersection / union
 
-def hausdorff_dist(gt: np.ndarray, seg: np.ndarray):
-    return hausdorff_distance(gt, seg)
+def hausdorff(gt: np.ndarray, seg: np.ndarray, voxel_spacing=None):
+    gt = gt.astype(bool)
+    seg = seg.astype(bool)
+
+    if not gt.any() and not seg.any():
+        return 0.0
+    if gt.any() != seg.any():
+        return np.inf
+
+    if voxel_spacing is None:
+        voxel_spacing = np.ones(3)
+
+    gt_pts = np.argwhere(gt) * voxel_spacing
+    seg_pts = np.argwhere(seg) * voxel_spacing
+
+    d_gt_to_seg = cdist(gt_pts, seg_pts).min(axis=1)
+    d_seg_to_gt = cdist(seg_pts, gt_pts).min(axis=1)
+
+    return max(d_gt_to_seg.max(), d_seg_to_gt.max())
 
 def hd95(gt: np.ndarray, seg: np.ndarray, voxel_spacing=None):
     """
@@ -62,13 +82,10 @@ def hd95(gt: np.ndarray, seg: np.ndarray, voxel_spacing=None):
     seg_pts = np.argwhere(seg_surface) * voxel_spacing
 
     # Compute pairwise distances
-    dists_gt_to_seg = cdist(gt_pts, seg_pts).min(axis=1)
-    dists_seg_to_gt = cdist(seg_pts, gt_pts).min(axis=1)
+    dist = hausdorff(gt_pts, seg_pts, voxel_spacing)
 
     # 95th percentile Hausdorff Distance
-    hd95_value = max(
-        np.percentile(dists_gt_to_seg, 95),
-        np.percentile(dists_seg_to_gt, 95)
+    return np.percentile(dist, 95)
     )
 
     return hd95_value

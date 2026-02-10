@@ -1,80 +1,149 @@
 import os
 
-# Fix for OpenMP library conflict on Windows
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
+import numpy as np
 import torch
-from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data import Dataset, Subset, ConcatDataset, DataLoader
+from sklearn.model_selection import KFold
+import nibabel as nib
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 
-from pytorch3dunet.unet3d.utils import (
-    get_logger,
-    get_class
-)
+def mri_normalize(mri):
+    '''Normalizes an MRI entirely to value range [0, 1]'''
+    mri = np.maximum(mri, 0)
+    mri_min, mri_max = np.min(mri), np.max(mri)
+    normalized = (mri - mri_min) / (mri_max - mri_min + 1e-8)
+    return normalized
 
-from pytorch3dunet.unet3d.config import TorchDevice, os_dependent_dataloader_kwargs
-from pytorch3dunet.unet3d.utils import get_logger
+def get_mri(path):
+    mri = nib.load(path).get_fdata().astype(np.float32)
+    return mri_normalize(mri)
 
-logger = get_logger("Dataset")
+class Glioma3DDataset(Dataset):
+    def __init__(self, root):
+        """
+        root: path to dataset root
+        """
+        self.instances = self._find_instances(root)
 
-def get_dataset_loader(config: dict) -> dict[str, DataLoader]:
-    """
-    Returns dictionary containing the training and validation loaders (torch.utils.data.DataLoader).
-    Args:
-        config:  a top level configuration object containing the 'loaders' key
-    Returns:
-        dict {
-            'train': <train_loader>
-            'val': <val_loader>
-        }
-    """
-    assert "loaders" in config, "Could not find data loaders configuration"
-    loaders_config = config["loaders"]
-    assert set(loaders_config["train"]["file_paths"]).isdisjoint(loaders_config["val"]["file_paths"]), (
-        "Train and validation 'file_paths' overlap. One cannot use validation data for training!"
+    def _find_instances(self, root):
+        instances = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            if filenames and not dirnames:
+                instances.append(dirpath)
+        return instances
+
+    def _load_instance(self, folder):
+        files = os.listdir(folder)
+
+        # Prefer .npy
+        mri = seg = None
+        for f in files:
+            if f.startswith("preprocessed") and "segmentation" in f and f.endswith(".npy"):
+                seg = np.load(os.path.join(folder, f))
+            elif f.startswith("preprocessed") and "FLAIR" in f and f.endswith(".npy"):
+                mri = np.load(os.path.join(folder, f))
+
+        if mri is not None and seg is not None:
+            return mri, seg
+
+        # Fall back to .nii.gz
+        for f in files:
+            if f.endswith(".nii.gz") and "seg" in f.lower():
+                seg = get_mri(os.path.join(folder, f))
+            elif f.endswith(".nii.gz") and ("t2f" in f or "flair" in f):
+                mri = get_mri(os.path.join(folder, f))
+
+        if mri is None or seg is None:
+            raise RuntimeError(f"Missing MRI or GT in {folder}")
+
+        return mri, seg
+
+    def __len__(self):
+        return len(self.instances)
+
+    def __getitem__(self, idx):
+        folder = self.instances[idx]
+        mri, seg = self._load_instance(folder)
+
+        # Add channel dim
+        mri = torch.from_numpy(mri).unsqueeze(0).to(torch.float32)
+        seg = torch.from_numpy(seg).to(torch.float32)
+
+        return mri, seg
+
+
+def build_cv_loaders(
+    brats_training_root,
+    # brats_validation_root,
+    fold_idx,
+    num_folds=5,
+    batch_size=1,
+    num_workers=4,
+):
+    full_train_ds = Glioma3DDataset(brats_training_root)
+    # test_ds = Glioma3DDataset(brats_validation_root)
+
+    kf = KFold(n_splits=num_folds, shuffle=True, random_state=42)
+    splits = list(kf.split(range(len(full_train_ds))))
+
+    train_indices, val_indices = splits[fold_idx]
+
+    train_ds = Subset(full_train_ds, train_indices)
+    val_ds = Subset(full_train_ds, val_indices)
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
     )
 
-    logger.info("Creating training and validation set loaders...")
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
 
-    # get dataset class
-    dataset_cls_str = loaders_config.get("dataset", None)
-    if dataset_cls_str is None:
-        dataset_cls_str = "StandardHDF5Dataset"
-        logger.warning(f"Cannot find dataset class in the config. Using default '{dataset_cls_str}'.")
-    def _loader_classes(class_name):
-        modules = ["pytorch3dunet.datasets.hdf5", "pytorch3dunet.datasets.dsb", "pytorch3dunet.datasets.utils"]
-        return get_class(class_name, modules)
-    dataset_class = _loader_classes(dataset_cls_str)
+    # test_loader = DataLoader(
+    #     test_ds,
+    #     batch_size=1,
+    #     shuffle=False,
+    #     num_workers=num_workers,
+    #     pin_memory=True,
+    # )
 
-    train_datasets = dataset_class.create_datasets(loaders_config, phase="train")
-    val_datasets = dataset_class.create_datasets(loaders_config, phase="val")
+    return train_loader, val_loader#, test_loader
 
-    num_workers = loaders_config.get("num_workers", 1)
-    logger.info(f"Number of workers for train/val dataloader: {num_workers}")
-    batch_size = loaders_config.get("batch_size", 1)
-    device = config.get("device", None)
-    assert device, "Device not specified in the config file and could not be inferred automatically"
-    if device == TorchDevice.CUDA and torch.cuda.device_count() > 1:
-        logger.info(
-            f"{torch.cuda.device_count()} GPUs available. Using batch_size = {torch.cuda.device_count()} * {batch_size}"
-        )
-        batch_size = batch_size * torch.cuda.device_count()
+def show_mri(mri):
+    """
+    Displays animated MRI.
+    
+    :param mri: normalized MRI as numpy array
+    """
+    fig, ax = plt.subplots()
+    im = ax.imshow(mri[:, :, 0], cmap='gray', animated=True, vmin=0, vmax=1)
+    title = ax.set_title("Slice 0")
+    # title = ax.text(0.5, 1.05, "Slice 0",
+    #                 ha='center', va='top',
+    #                 transform=ax.transAxes,
+    #                 animated=True)
+    ax.axis('off')
 
-    logger.info(f"Batch size for train/val loader: {batch_size}")
-    loader_kwargs = os_dependent_dataloader_kwargs()
-    return {
-        "train": DataLoader(
-            ConcatDataset(train_datasets),
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-            **loader_kwargs,
-        ),
-        # don't shuffle during validation: useful when showing how predictions for a given batch get better over time
-        "val": DataLoader(
-            ConcatDataset(val_datasets),
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            **loader_kwargs,
-        ),
-    }
+    def update(frame):
+        im.set_array(mri[:, :, frame])
+        title.set_text(f"Slice {frame}")
+        return [im, title]
+
+    ani = FuncAnimation(
+        fig,
+        update,
+        frames = mri.shape[2],
+        interval=100,
+        # blit=True
+    )
+    plt.show()
+

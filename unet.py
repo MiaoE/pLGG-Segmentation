@@ -1,109 +1,262 @@
-import os
+import os, json
 import random
 
-# Fix for OpenMP library conflict on Windows
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
 import torch
-from torch.utils.data import DataLoader, ConcatDataset
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import numpy as np
+from tqdm import tqdm
+from pytorch3dunet.unet3d.model import UNet3D
+from pytorch3dunet.unet3d.losses import DiceLoss
+from torchinfo import summary
 
-from pytorch3dunet.datasets.utils import get_train_loaders
-from pytorch3dunet.unet3d.losses import get_loss_criterion
-from pytorch3dunet.unet3d.metrics import get_evaluation_metric
-from pytorch3dunet.unet3d.model import get_model
-from pytorch3dunet.unet3d.utils import (
-    TensorboardFormatter,
-    create_lr_scheduler,
-    create_optimizer,
-    get_logger,
-    get_number_of_learnable_parameters,
-    get_class
-)
+from dataset import Glioma3DDataset, build_cv_loaders
+from evaluations import dice_coefficient_score, iou_score, hausdorff, hd95
+from main_foundation_model import get_bbox, run_medsam_seg_layer
+from medsam import get_medsam_predictor
 
-from pytorch3dunet.unet3d.config import copy_config, load_config
-from pytorch3dunet.unet3d.config import TorchDevice, os_dependent_dataloader_kwargs
-from pytorch3dunet.unet3d.trainer import create_trainer, UNetTrainer
-from pytorch3dunet.unet3d.utils import get_logger
+def build_unet_model(device, state_dict=None, f_maps=32):
+    # f_maps=32#16 for small GPU VRAM, 32 for large memory
+    model = UNet3D(
+        in_channels=1,
+        out_channels=1,
+        final_sigmoid=False,   # for CrossEntropyLoss
+        f_maps=f_maps,
+        layer_order="gcr",
+        # num_groups=8,
+        is_segmentation=True,
+    ).to(device)
+    if state_dict is not None:
+        dict = torch.load(state_dict, map_location=device)
+        model.load_state_dict(dict['model_state_dict'])
+    return model
 
-from dataset import get_dataset_loader
+def build_training_components(model, lr=1e-4):
+    criterion = DiceLoss()#DiceCELoss(dice_weight=1.0, ce_weight=1.0)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    return criterion, optimizer
 
-logger = get_logger("UNet3DTraining")
+def train_one_epoch(model, loader, criterion, optimizer, device):
+    model.train()
+    running_loss = 0.0
+
+    for x, y in loader:
+        x = x.to(device)
+        y = y.to(device)
+        if y.dim() == 4:  # (B, D, H, W)
+            y = y.unsqueeze(1)  # → (B, 1, D, H, W)
+
+        optimizer.zero_grad(set_to_none=True)
+
+        logits = model(x)
+        loss = criterion(logits, y)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item()
+
+    return running_loss / len(loader)
+
+def evaluate(model, loader, device):
+    model.eval()
+    scores = {'dice': 0, 'iou': 0, 'hd': 0, 'hd95': 0}
+    count = 0
+
+    with torch.no_grad():
+        for x, y in loader:
+            count += 1
+            x = x.to(device)
+            y = y.to('cpu')
+            if y.dim() == 4:  # (B, D, H, W)
+                y = y.unsqueeze(1)  # → (B, 1, D, H, W)
+            y = y.numpy()
+            logits = model(x)
+            probs = torch.sigmoid(logits)
+            preds = (probs > 0.5).detach().cpu().float().numpy()
+
+            dice, iou, hd, h95 = dice_coefficient_score(y, preds), iou_score(y, preds), hausdorff(y, preds), hd95(y, preds)
+            scores['dice']+= dice
+            scores['iou'] += iou
+            scores['hd'] += hd
+            scores['hd95'] += h95
+        
+        scores['dice'] /= count
+        scores['iou'] /= count
+        scores['hd'] /= count
+        scores['hd95'] /= count
+
+        return scores
 
 
+def run_cv_training(
+    dataset_root,
+    device,
+    num_folds=5,
+    num_epochs=100,
+    batch_size=1,
+    num_workers=4
+):
+    fold_results = {}
+    best_fold = 0
+    best_fold_dice = 0
 
-def get_trainer(config: dict) -> "UNetTrainer":
-    # Create the model
-    model = get_model(config["model"])
+    for fold in range(num_folds):
+        print(f"\n===== Fold {fold + 1}/{num_folds} =====")
 
-    device = config.get("device", None)
-    assert device, "Device not specified in the config file and could not be inferred automatically"
-    logger.info(f"Using device: {device}")
+        train_loader, val_loader = build_cv_loaders(dataset_root, fold, num_folds=num_folds, batch_size=batch_size, num_workers=num_workers)
+
+        model = build_unet_model(device, state_dict=os.path.join('.', 'model_pretrained', '3dunet', 'best_checkpoint.pytorch'))
+        model.to(device)
+        criterion, optimizer = build_training_components(model)
+
+        best_dice = 0.0
+        fold_log = []
+        for epoch in range(1, num_epochs + 1):
+            train_loss = train_one_epoch(
+                model, train_loader, criterion, optimizer, device
+            )
+            val_scores = evaluate(model, val_loader, device)
+
+            print(
+                f"Epoch {epoch:03d} | "
+                f"Loss {train_loss:.4f} | "
+                f"Val Dice {val_scores['dice']:.4f}"
+            )
+            fold_log.append({'loss': train_loss, 'val_scores': val_scores})
+
+            if val_scores['dice'] > best_dice:
+                best_dice = val_scores['dice']
+                os.makedirs(os.path.join('model_output', 'UNet'), exist_ok=True)
+                save_path = os.path.join('model_output', 'UNet', f"unet3d_fold{fold}.pt")
+                torch.save(
+                    {
+                        "fold": fold,
+                        "epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        "val_scores": val_scores,
+                    },
+                    save_path,
+                )
+
+        fold_results[fold] = fold_log
+        print(f"Best Dice (fold {fold}): {best_dice:.4f}")
+        if best_dice > best_fold_dice:
+            best_fold_dice = best_dice
+            best_fold = fold
+        del model
+        torch.cuda.empty_cache()
+    os.makedirs(os.path.join('output', 'UNet'), exist_ok=True)
+    with open(os.path.join('output', 'UNet', 'training_result.json'), 'w') as f:
+        json.dump(fold_results, f)
+    return best_fold
+
+
+def run_test(ds_root, device, fold):
+    dataset = Glioma3DDataset(ds_root)
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
+
+    model = build_unet_model(device, state_dict=os.path.join('.', 'model_output', 'UNet', f"unet3d_fold{fold}.pt"))
     model.to(device)
+    model = model.float()
+    model.eval()
 
-    # Log the number of learnable parameters
-    logger.info(f"Number of learnable params {get_number_of_learnable_parameters(model)}")
+    scores = {'dice': 0, 'iou': 0, 'hd': 0, 'hd95': 0}
+    count = 0
 
-    # Create loss criterion
-    loss_criterion = get_loss_criterion(config)
-    # Create evaluation metric
-    eval_criterion = get_evaluation_metric(config)
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.to(device, dtype=torch.float32)
+            y = y.to('cpu')
+            if y.dim() == 4:  # (B, D, H, W)
+                y = y.unsqueeze(1)  # → (B, 1, D, H, W)
+            y = y.numpy()
+            logits = model(x)
+            probs = torch.sigmoid(logits)
+            preds = (probs > 0.5).detach().cpu().int().numpy()# binary mask
 
-    # Create data loaders
-    loaders = get_dataset_loader(config)
+            dice, iou, hd, h95 = dice_coefficient_score(y, preds), iou_score(y, preds), hausdorff(y, preds), hd95(y, preds)
+            scores['dice']+= dice
+            scores['iou'] += iou
+            scores['hd'] += hd
+            scores['hd95'] += h95
+        
+        scores['dice'] /= count
+        scores['iou'] /= count
+        scores['hd'] /= count
+        scores['hd95'] /= count
+    del model
+    if device == 'cuda':
+        torch.cuda.empty_cache()
+    return scores
 
-    # Create the optimizer
-    optimizer = create_optimizer(config["optimizer"], model)
+    model.to(device)
+def run_test_with_medsam(ds_root, device, fold):
+    dataset = Glioma3DDataset(ds_root)
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-    # Create learning rate adjustment strategy
-    lr_scheduler = create_lr_scheduler(config.get("lr_scheduler", None), optimizer)
+    model = build_unet_model(device, state_dict=os.path.join('.', 'model_output', 'UNet', f"unet3d_fold{fold}.pt"))
+    model.to(device)
+    model = model.float()
+    model.eval()
 
-    trainer_config = config["trainer"]
-    # Create tensorboard formatter
-    tensorboard_formatter_config = trainer_config.pop("tensorboard_formatter", {})
-    tensorboard_formatter = TensorboardFormatter(**tensorboard_formatter_config)
-    # Create trainer
-    resume = trainer_config.pop("resume", None)
-    pre_trained = trainer_config.pop("pre_trained", None)
+    predictor = get_medsam_predictor(device)
 
-    return UNetTrainer(
-        model=model,
-        optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
-        loss_criterion=loss_criterion,
-        eval_criterion=eval_criterion,
-        loaders=loaders,
-        tensorboard_formatter=tensorboard_formatter,
-        resume=resume,
-        pre_trained=pre_trained,
+    scores = {'dice': 0, 'iou': 0, 'hd': 0, 'hd95': 0}
+    count = 0
+
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.to(device, dtype=torch.float32)
+            y = y.to('cpu', dtype=torch.float32)
+            if y.dim() == 4:  # (B, D, H, W)
+                y = y.squeeze()  # → (D, H, W)
+            y = y.numpy()
+            logits = model(x)
+            probs = torch.sigmoid(logits)
+            preds = (probs > 0.5).detach().cpu().int().squeeze().numpy()# binary mask
+
+            # start medsam task, all volumes in NumPy
+            x = x.squeeze().numpy()
+
+            H, W, C = x.shape
+
+            for segment_layer in range(C):
+                segment_bbox = get_bbox(preds[:, :, segment_layer].astype(bool), model='medsam')
+                if segment_bbox is not None:
+                    mask = run_medsam_seg_layer(predictor, x, segment_layer, segment_bbox)
+                    # print(mask)
+                    preds[:, :, segment_layer] = mask.astype(preds.dtype)
+
+            dice, iou, hd, h95 = dice_coefficient_score(y, preds), iou_score(y, preds), hausdorff(y, preds), hd95(y, preds)
+            scores['dice']+= dice
+            scores['iou'] += iou
+            scores['hd'] += hd
+            scores['hd95'] += h95
+        
+        scores['dice'] /= count
+        scores['iou'] /= count
+        scores['hd'] /= count
+        scores['hd95'] /= count
+    del model
+    if device == 'cuda':
+        torch.cuda.empty_cache()
+    return scores
+
+def main():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print("Using device:", device)
+
+    best_fold = run_cv_training(
         device=device,
         **trainer_config,
     )
 
-def main():
-    """Main entry point for training 3D U-Net models.
+    run_test(
+    )
 
-    Loads configuration from command line arguments, sets random seeds if specified,
-    creates a trainer instance, and starts the training process.
-    """
-    # Load and log experiment configuration
-    config, config_path = load_config()
-    logger.info(config)
-
-    manual_seed = config.get("manual_seed", None)
-    if manual_seed is not None:
-        logger.info(f"Seed the RNG for all devices with {manual_seed}")
-        logger.warning("Using CuDNN deterministic setting. This may slow down the training!")
-        random.seed(manual_seed)
-        torch.manual_seed(manual_seed)
-        # see https://pytorch.org/docs/stable/notes/randomness.html
-        torch.backends.cudnn.deterministic = True
-
-    # Create trainer
-    trainer = get_trainer(config)
-    # Copy config file
-    copy_config(config, config_path)
-    # Start training
-    trainer.fit()
+    run_test_with_medsam(
+    )
 
 
 if __name__ == "__main__":
