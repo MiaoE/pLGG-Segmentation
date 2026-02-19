@@ -81,11 +81,13 @@ def hd95(gt: np.ndarray, seg: np.ndarray, voxel_spacing=None):
     gt_pts = np.argwhere(gt_surface) * voxel_spacing
     seg_pts = np.argwhere(seg_surface) * voxel_spacing
 
-    # Compute pairwise distances
-    dist = hausdorff(gt_pts, seg_pts, voxel_spacing)
+    # Compute surface-to-surface distances
+    d_gt_to_seg = cdist(gt_pts, seg_pts).min(axis=1)
+    d_seg_to_gt = cdist(seg_pts, gt_pts).min(axis=1)
 
-    # 95th percentile Hausdorff Distance
-    return np.percentile(dist, 95)
+    all_dists = np.concatenate([d_gt_to_seg, d_seg_to_gt])
+
+    return np.percentile(all_dists, 95)
+
     )
 
-    return hd95_value

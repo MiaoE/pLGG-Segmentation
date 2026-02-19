@@ -68,7 +68,8 @@ class Glioma3DDataset(Dataset):
 
         # Add channel dim
         mri = torch.from_numpy(mri).unsqueeze(0).to(torch.float32)
-        seg = torch.from_numpy(seg).to(torch.float32)
+        seg = torch.from_numpy(seg)
+        seg = (seg > 0).float()
 
         return mri, seg
 
