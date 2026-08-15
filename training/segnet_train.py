@@ -1,65 +1,109 @@
-import os, json
-import random, gc
+import os, json, gc
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-import numpy as np
-from tqdm import tqdm
-from pytorch3dunet.unet3d.model import UNet3D
-from pytorch3dunet.unet3d.losses import DiceLoss
 from torchinfo import summary
 from medpy.metric.binary import hd95
 
-from dataset import Glioma3DDataset, build_cv_loaders
-from evaluations import dice_coefficient_score, iou_score
+from data.dataset import Glioma3DDataset, build_cv_loaders
+from training.evaluations import dice_coefficient_score, iou_score
 from main_foundation_model import get_bbox, run_medsam_seg_layer
 from medsam import get_medsam_predictor
 
-def build_unet_model(device, state_dict=None, f_maps=32):
-    # f_maps=32#16 for small GPU VRAM, 32 for large memory
-    model = UNet3D(
-        in_channels=1,
-        out_channels=1,
-        final_sigmoid=False,   # for CrossEntropyLoss
-        f_maps=f_maps,
-        layer_order="gcr",
-        # num_groups=8,
-        is_segmentation=True,
-    ).to(device)
-    if state_dict is not None:
-        mydict = torch.load(state_dict, map_location=device, weights_only=False)
-        model.load_state_dict(mydict['model_state_dict'])
-    return model
+def conv_block(in_channels, out_channels, kernel_size=3, num_convs=2):
+    layers = []
+    for i in range(num_convs):
+        layers.append(
+            nn.Conv3d(
+                in_channels if i == 0 else out_channels,
+                out_channels,
+                kernel_size=kernel_size,
+                padding=kernel_size // 2
+            )
+        )
+        layers.append(nn.BatchNorm3d(out_channels))
+        layers.append(nn.ReLU(inplace=True))
+    return nn.Sequential(*layers)
 
-# def dice_loss_softmax(logits, targets, epsilon=1e-6):
-#     """
-#     logits: (B, C, D, H, W)
-#     targets: (B, D, H, W)
-#     """
-#     probs = F.softmax(logits, dim=1)
-#     tumor_prob = probs[:, 1]  # class 1 = tumor
 
-#     targets = targets.float()
+class SegNet3D(nn.Module):
+    def __init__(self, in_channels, n_labels=1, kernel=3, pool_size=2):
+        super(SegNet3D, self).__init__()
 
-#     intersection = torch.sum(tumor_prob * targets)
-#     union = torch.sum(tumor_prob) + torch.sum(targets)
+        # -------- Encoder --------
+        self.enc1 = conv_block(in_channels, 32, kernel, num_convs=2)
+        self.enc2 = conv_block(32, 64, kernel, num_convs=2)
+        self.enc3 = conv_block(64, 128, kernel, num_convs=3)
+        self.enc4 = conv_block(128, 256, kernel, num_convs=3)
+        self.enc5 = conv_block(256, 256, kernel, num_convs=3)
 
-#     dice = (2. * intersection + epsilon) / (union + epsilon)
-#     return 1.0 - dice
+        self.pool = nn.MaxPool3d(pool_size, stride=pool_size, return_indices=True)
+        self.unpool = nn.MaxUnpool3d(pool_size, stride=pool_size)
 
-# class DiceCELoss(nn.Module):
-#     def __init__(self, dice_weight=1.0, ce_weight=1.0):
-#         super().__init__()
-#         self.ce = nn.CrossEntropyLoss()
-#         self.dice_weight = dice_weight
-#         self.ce_weight = ce_weight
+        # -------- Decoder --------
+        self.dec5 = conv_block(256, 256, kernel, num_convs=3)
+        self.dec4 = conv_block(256, 128, kernel, num_convs=3)
+        self.dec3 = conv_block(128, 64, kernel, num_convs=3)
+        self.dec2 = conv_block(64, 32, kernel, num_convs=2)
+        self.dec1 = conv_block(32, 32, kernel, num_convs=1)
 
-#     def forward(self, logits, targets):
-#         ce_loss = self.ce(logits, targets)
-#         dice_loss = dice_loss_softmax(logits, targets)
-#         return self.ce_weight * ce_loss + self.dice_weight * dice_loss
+        self.final_conv = nn.Conv3d(32, n_labels, kernel_size=1)
+
+        self._initialize_weights()
+
+    def forward(self, x):
+
+        # -------- Encoder --------
+        x1 = self.enc1(x)
+        size1 = x1.size()
+        x1p, idx1 = self.pool(x1)
+
+        x2 = self.enc2(x1p)
+        size2 = x2.size()
+        x2p, idx2 = self.pool(x2)
+
+        x3 = self.enc3(x2p)
+        size3 = x3.size()
+        x3p, idx3 = self.pool(x3)
+
+        x4 = self.enc4(x3p)
+        size4 = x4.size()
+        x4p, idx4 = self.pool(x4)
+
+        x5 = self.enc5(x4p)
+        size5 = x5.size()
+        x5p, idx5 = self.pool(x5)
+
+        # -------- Decoder --------
+        d5 = self.unpool(x5p, idx5, output_size=size5)
+        d5 = self.dec5(d5)
+
+        d4 = self.unpool(d5, idx4, output_size=size4)
+        d4 = self.dec4(d4)
+
+        d3 = self.unpool(d4, idx3, output_size=size3)
+        d3 = self.dec3(d3)
+
+        d2 = self.unpool(d3, idx2, output_size=size2)
+        d2 = self.dec2(d2)
+
+        d1 = self.unpool(d2, idx1, output_size=size1)
+        d1 = self.dec1(d1)
+
+        out = self.final_conv(d1)
+
+        return out
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv3d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+
 class DiceBCELoss(nn.Module):
     def __init__(self, dice_weight=1.0, bce_weight=1.0):
         super().__init__()
@@ -81,7 +125,14 @@ class DiceBCELoss(nn.Module):
 
         return self.bce_weight * bce + self.dice_weight * (1 - dice)
 
-def build_training_components(model, lr=1e-4):
+def build_segnet_model(device, in_channels=1, state_dict=None):
+    model = SegNet3D(in_channels=in_channels)
+    if state_dict is not None:
+        dict_model = torch.load(state_dict, map_location=device, weights_only=False)
+        model.load_state_dict(dict_model['model_state_dict'])
+    return model
+
+def build_training_components(model, lr=5e-3):
     criterion = DiceBCELoss(
         dice_weight=5.0,
         bce_weight=0.5
@@ -107,7 +158,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
 
         optimizer.zero_grad(set_to_none=True)
 
-        _, logits = model(x, return_logits=True)
+        logits = model(x)
         loss = criterion(logits, y)
 
         loss.backward()
@@ -140,11 +191,17 @@ def evaluate(model, loader, device):
 
             y = y.squeeze().float()
 
-            _, logits = model(x, return_logits=True)
+            logits = model(x)
+            # print(
+            #     type(logits),
+            #     logits.shape,
+            #     logits.min().item(),
+            #     logits.max().item(),
+            #     logits.mean().item()
+            # )
 
             scores['softdice'] += soft_dice_from_logits(logits, y).item()
 
-            # preds = (probs > 0.5).squeeze().cpu().numpy().astype(bool)
             preds = (torch.sigmoid(logits) > 0.5).squeeze().cpu().numpy().astype(bool)
             y_np = y.cpu().numpy().astype(bool)
             # print(y_np.shape)#240,240,155
@@ -152,11 +209,8 @@ def evaluate(model, loader, device):
 
             scores['dice'] += dice_coefficient_score(y_np, preds)
             scores['iou'] += iou_score(y_np, preds)
-            # hd100, hd_95 = hausdorff(y_np, preds), hd95(y_np, preds)
-            # scores['hd'] += hd100
-            # scores['hd95'] += hd_95
 
-            del x, y, logits, preds#, hd100, hd_95
+            del x, y, logits, preds
             gc.collect()
 
     for k in scores:
@@ -182,7 +236,7 @@ def run_cv_training(
 
         train_loader, val_loader = build_cv_loaders(dataset_root, fold, num_folds=num_folds, batch_size=batch_size, num_workers=num_workers)
 
-        model = build_unet_model(device, state_dict=os.path.join('model_pretrained', '3dunet', 'best_checkpoint.pytorch'))
+        model = build_segnet_model(device)
         model.to(device)
         criterion, optimizer = build_training_components(model)
 
@@ -203,8 +257,8 @@ def run_cv_training(
 
             if val_scores['dice'] > best_dice:
                 best_dice = val_scores['dice']
-                os.makedirs(os.path.join('model_output', 'UNet'), exist_ok=True)
-                save_path = os.path.join('model_output', 'UNet', f"unet3d_fold{fold}.pt")
+                os.makedirs(os.path.join('model_output', 'SegNet'), exist_ok=True)
+                save_path = os.path.join('model_output', 'SegNet', f"segnet3d_fold{fold}.pt")
                 torch.save(
                     {
                         "fold": fold,
@@ -222,38 +276,35 @@ def run_cv_training(
             best_fold = fold
         del model
         torch.cuda.empty_cache()
-    os.makedirs(os.path.join('output', 'UNet'), exist_ok=True)
-    with open(os.path.join('output', 'UNet', 'training_result.json'), 'w') as f:
+    os.makedirs(os.path.join('output', 'SegNet'), exist_ok=True)
+    with open(os.path.join('output', 'SegNet', 'training_result.json'), 'w') as f:
         json.dump(fold_results, f)
     return best_fold
-
 
 def run_test(ds_root, device, fold):
     dataset = Glioma3DDataset(ds_root)
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-    model = build_unet_model(device, state_dict=os.path.join('model_output', 'UNet', f"unet3d_fold{fold}.pt"))
+    model = build_segnet_model(device, state_dict=os.path.join('model_output', 'SegNet', f"segnet3d_fold{fold}.pt"))
     model.to(device)
     model = model.float()
     model.eval()
 
-    scores = {'dice': 0, 'iou': 0, 'hd95': 0}#, 'hd95': 0}
+    scores = {'dice': 0, 'iou': 0, 'hd95': 0}#, 'hd': 0, 'hd95': 0}
     count = 0
 
     with torch.no_grad():
         for x, y in loader:
             count += 1
             x = x.to(device, dtype=torch.float32)
-            y = y.to('cpu')
+            y = y.to('cpu', dtype=torch.float32)
             if y.dim() == 4:  # (B, D, H, W)
                 y = y.squeeze()  # → (D, H, W)
-            y = y.numpy().astype(int)
-            _, logits = model(x, return_logits=True)
+            y = y.numpy()
+            logits = model(x)
             probs = torch.sigmoid(logits)
             preds = (probs > 0.5).detach().int().squeeze().cpu().numpy()# binary mask
 
-            print(y.shape)
-            print(preds.shape)
             dice, iou, h95 = dice_coefficient_score(y, preds), iou_score(y, preds), hd95(y, preds)#, hausdorff(y, preds), hd95(y, preds)
             scores['dice']+= dice
             scores['iou'] += iou
@@ -261,6 +312,8 @@ def run_test(ds_root, device, fold):
             scores['hd95'] += h95
 
             del x, y, logits, probs, preds
+            if device == 'cuda':
+                torch.cuda.empty_cache()
 
         scores['dice'] /= count
         scores['iou'] /= count
@@ -271,49 +324,11 @@ def run_test(ds_root, device, fold):
         torch.cuda.empty_cache()
     return scores
 
-'''def run_test(ds_root, device, fold):
-    dataset = Glioma3DDataset(ds_root)
-    loader = DataLoader(dataset, batch_size=1, shuffle=False)
-
-    model = build_unet_model(device, state_dict=os.path.join('.', 'model_output', 'UNet', f"unet3d_fold{fold}.pt"))
-    model.to(device)
-    model = model.float()
-    model.eval()
-
-    scores = {'dice': 0, 'iou': 0, 'hd': 0, 'hd95': 0}
-    count = 0
-
-    with torch.no_grad():
-        for x, y in loader:
-            x = x.to(device, dtype=torch.float32)
-            y = y.to(device, dtype=torch.float32)
-            if y.dim() == 4:  # (B, D, H, W)
-                y = y.unsqueeze(1)  # → (B, 1, D, H, W)
-            y = y.numpy()
-            logits = model(x)
-            probs = torch.sigmoid(logits)
-            preds = (probs > 0.5).int().numpy()# binary mask
-
-            dice, iou, hd, h95 = dice_coefficient_score(y, preds), iou_score(y, preds), hausdorff(y, preds), hd95(y, preds)
-            scores['dice']+= dice
-            scores['iou'] += iou
-            scores['hd'] += hd
-            scores['hd95'] += h95
-        
-        scores['dice'] /= count
-        scores['iou'] /= count
-        scores['hd'] /= count
-        scores['hd95'] /= count
-    del model
-    if device == 'cuda':
-        torch.cuda.empty_cache()
-    return scores'''
-
 def run_test_with_medsam(ds_root, device, fold):
     dataset = Glioma3DDataset(ds_root)
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-    model = build_unet_model(device, state_dict=os.path.join('.', 'model_output', 'UNet', f"unet3d_fold{fold}.pt"))
+    model = build_segnet_model(device, state_dict=os.path.join('model_output', 'SegNet', f"segnet3d_fold{fold}.pt"))
     model.to(device)
     model = model.float()
     model.eval()
@@ -329,13 +344,13 @@ def run_test_with_medsam(ds_root, device, fold):
             x = x.to(device, dtype=torch.float32)
             y = y.to('cpu', dtype=torch.int)
             if y.dim() == 4:  # (B, D, H, W)
-                y = y.squeeze()  # → (D, H, W)
+                y = y.squeeze()
             y = y.numpy()
             logits = model(x)
             probs = torch.sigmoid(logits)
-            preds = (probs > 0.5).detach().cpu().int().squeeze().numpy()# binary mask
+            preds = (probs > 0.5).detach().int().squeeze().cpu().numpy()# binary mask
 
-            # start medsam task, all volumes in NumPy
+            # start medsam task
             x = x.squeeze().numpy()
 
             H, W, C = x.shape
@@ -346,7 +361,7 @@ def run_test_with_medsam(ds_root, device, fold):
                     mask = run_medsam_seg_layer(predictor, x, segment_layer, segment_bbox)
                     # print(mask)
                     preds[:, :, segment_layer] = mask.astype(preds.dtype)
-            preds = preds.astype(int)
+
             dice, iou, h95 = dice_coefficient_score(y, preds), iou_score(y, preds), hd95(y, preds)
             scores['dice']+= dice
             scores['iou'] += iou
@@ -362,28 +377,29 @@ def run_test_with_medsam(ds_root, device, fold):
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print("Using device:", device)
+    print("Using device: " + device)
 
     best_fold = run_cv_training(
         device=device,
         num_folds=5,
         num_epochs=50,
         batch_size=1,
+        num_workers=4,
     )
 
     test_score = run_test(
         device,
         best_fold
     )
-    os.makedirs(os.path.join('output', 'UNet'), exist_ok=True)
-    with open(os.path.join('output', 'UNet', 'test_result.json'), 'w') as f:
+    os.makedirs(os.path.join('output', 'SegNet'), exist_ok=True)
+    with open(os.path.join('output', 'SegNet', 'test_result.json'), 'w') as f:
         json.dump(test_score, f)
-    
+
     med_score = run_test_with_medsam(
         device,
         best_fold
     )
-    with open(os.path.join('output', 'UNet', 'test_medsam_result.json'), 'w') as f:
+    with open(os.path.join('output', 'SegNet', 'test_medsam_result.json'), 'w') as f:
         json.dump(med_score, f)
 
 

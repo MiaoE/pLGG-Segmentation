@@ -2,22 +2,13 @@ import os
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, Subset, ConcatDataset, DataLoader
+from torch.utils.data import Dataset, Subset, DataLoader
 from sklearn.model_selection import KFold
-import nibabel as nib
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
-def mri_normalize(mri):
-    '''Normalizes an MRI entirely to value range [0, 1]'''
-    mri = np.maximum(mri, 0)
-    mri_min, mri_max = np.min(mri), np.max(mri)
-    normalized = (mri - mri_min) / (mri_max - mri_min + 1e-8)
-    return normalized
-
-def get_mri(path):
-    mri = nib.load(path).get_fdata().astype(np.float32)
-    return mri_normalize(mri)
+from loader import get_mri
+from preprocessing_steps import mri_normalize
 
 class Glioma3DDataset(Dataset):
     def __init__(self, root):
@@ -50,9 +41,9 @@ class Glioma3DDataset(Dataset):
         # Fall back to .nii.gz
         for f in files:
             if f.endswith(".nii.gz") and "seg" in f.lower():
-                seg = get_mri(os.path.join(folder, f))
+                seg = mri_normalize(get_mri(os.path.join(folder, f)))
             elif f.endswith(".nii.gz") and ("t2f" in f or "flair" in f):
-                mri = get_mri(os.path.join(folder, f))
+                mri = mri_normalize(get_mri(os.path.join(folder, f)))
 
         if mri is None or seg is None:
             raise RuntimeError(f"Missing MRI or GT in {folder}")

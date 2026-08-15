@@ -89,5 +89,4 @@ def hd95(gt: np.ndarray, seg: np.ndarray, voxel_spacing=None):
 
     return np.percentile(all_dists, 95)
 
-    )
-
+    

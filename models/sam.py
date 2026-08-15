@@ -12,13 +12,14 @@ weights_path = {
 # SAM mask generator only uses numpy arrays
 # SAM expects 3 channels RGB inputs
 
-def get_predictor(model='vit_h'):
+def get_sam_predictor(model='vit_h'):
     sam = sam_model_registry[model](checkpoint=weights_path[model])
     predictor = SamPredictor(sam)
     return predictor
 
-def get_mask_generator(model='vit_h'):
-    sam = sam_model_registry[model](checkpoint=weights_path[model])
-    # Generate Mask
-    mask_generator = SamAutomaticMaskGenerator(sam)
-    return mask_generator
+# # Not used
+# def get_mask_generator(model='vit_h'):
+#     sam = sam_model_registry[model](checkpoint=weights_path[model])
+#     # Generate Mask
+#     mask_generator = SamAutomaticMaskGenerator(sam)
+#     return mask_generator

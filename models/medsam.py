@@ -1,6 +1,6 @@
 import os
 
-from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
+from segment_anything import sam_model_registry
 
 weights_path = {
     'lite' : os.path.join('model_pretrained', 'medsam', 'lite_medsam.pth'),

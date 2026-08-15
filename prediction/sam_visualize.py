@@ -1,30 +1,10 @@
-import os, json
+import os
 
-from segment_anything import SamPredictor, SamAutomaticMaskGenerator, sam_model_registry
 import numpy as np
 import matplotlib.pyplot as plt
 
-weights_path = {
-    'vit_h' : os.path.join('model_pretrained', 'sam', 'sam_vit_h_4b8939.pth'),
-    'vit_l' : os.path.join('model_pretrained', 'sam', 'sam_vit_l_0b3195.pth'),
-    'vit_b' : os.path.join('model_pretrained', 'sam', 'sam_vit_b_01ec64.pth'),
-    'default' : os.path.join('model_pretrained', 'sam', 'sam_vit_h_4b8939.pth'),
-}
-
 # SAM mask generator only uses numpy arrays
 # SAM expects 3 channels RGB inputs
-
-"""Get SAM models functions"""
-def get_predictor(model='vit_h'):
-    sam = sam_model_registry[model](checkpoint=weights_path[model])
-    predictor = SamPredictor(sam)
-    return predictor
-
-def get_mask_generator(model='vit_h'):
-    sam = sam_model_registry[model](checkpoint=weights_path[model])
-    # Generate Mask
-    mask_generator = SamAutomaticMaskGenerator(sam)
-    return mask_generator
 
 """Helper plotting/image displaying functions"""
 def _show_anns(anns):
@@ -66,23 +46,6 @@ def _show_points(coords, labels, ax, marker_size=200):
     
 
 """Bounding box prompting SAM segmentation functions"""
-def sam_segmentation_with_bbox(predictor, image, bbox):
-    '''expects image to be 3 channels (W, H, 3)
-    bbox in format [x,y,x,y] (single array)'''
-    predictor.set_image(image)
-    masks, scores, _ = predictor.predict(box=bbox[None, :], multimask_output=True)
-    best_mask = masks[scores.argmax()]
-    # masks, _, _ = predictor.predict(box=bbox[None, :], multimask_output=False)
-    '''output format
-    [[[False False False ... False False False]
-      [False False False ... False False False]
-      [False False False ... False False False]
-      ...
-      [False False False ... False False False]
-      [False False False ... False False False]
-      [False False False ... False False False]]]'''
-    return best_mask
-
 def show_segmentation_with_bbox(image, mask, gt_mask, bbox):
     plt.imshow(image)
     _show_mask(mask, plt.gca())
@@ -105,19 +68,6 @@ def save_segmentation_with_bbox(image, mask, gt_mask, bbox, folder, image_name):
     plt.close(fig)
 
 """Point prompting SAM segmentation functions"""
-def sam_segmentation_with_point(predictor, image, point, label):
-    '''
-    Docstring for sam_segmentation_with_point
-    
-    :param predictor: SAM predictor object
-    :param image: the MRI layer image
-    :param point: numpy array in [[x, y]] format (double array)
-    :param label: numpy single element array, 1 - foreground point, 0 - background point 
-    '''
-    predictor.set_image(image)
-    masks, _, _ = predictor.predict(point_coords=point, point_labels=label, multimask_output=False)
-    return masks
-
 def show_segmentation_with_point(image, mask, point, label):
     plt.imshow(image)
     _show_mask(mask[0], plt.gca())
@@ -135,33 +85,13 @@ def save_segmentation_with_point(image, mask, point, label, folder, image_name):
     os.makedirs(os.path.join('output', folder), exist_ok=True)
     plt.savefig(os.path.join('output', folder, f'{image_name}.png'))
 
-"""Raw SAM segmentation functions"""
-def sam_segmentation_raw(mask_generator, image):
-    masks = mask_generator.generate(image)
-    '''output format
-    [{  'segmentation': array([[False,  True,  True, ...,  True, False, False],
-        [ True,  True,  True, ...,  True,  True,  True],
-        [ True,  True,  True, ...,  True,  True,  True],
-        ...,
-        [ True,  True,  True, ...,  True,  True,  True],
-        [ True,  True,  True, ...,  True,  True,  True],
-        [ True,  True,  True, ...,  True,  True,  True]], shape=(240, 240)), 
-        'area': 57574, 
-        'bbox': [0, 0, 239, 239], 
-        'predicted_iou': 1.0361067056655884, 
-        'point_coords': [[236.25, 183.75]], 
-        'stability_score': 0.9902777671813965, 
-        'crop_box': [0, 0, 240, 240]
-    }]
-    '''
-    return masks
-
-def show_segmentation_raw(image, mask):
+""" SAM segmentation mask functions"""
+def show_segmentation_mask(image, mask):
     plt.imshow(image)
     _show_anns(mask)
     plt.show()
 
-def save_segmentation_raw(image, mask, folder, image_name):
+def save_segmentation_mask(image, mask, folder, image_name):
     plt.imshow(image)
     _show_anns(mask)
     os.makedirs(os.path.join('output', folder), exist_ok=True)

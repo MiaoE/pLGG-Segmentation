@@ -1,88 +1,35 @@
 ## Input image size: 240x240x155
 import os, json
 import argparse
+
 # import gc
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-import nibabel as nib
 # import cv2
 from datetime import datetime
 from scipy import ndimage
 # from scipy.ndimage import binary_opening
 
-# from segment_anything import SamPredictor, SamAutomaticMaskGenerator, sam_model_registry
-
-from sam import get_predictor, get_mask_generator, sam_segmentation_with_bbox, show_segmentation_with_bbox, save_segmentation_with_bbox, sam_segmentation_with_point, show_segmentation_with_point, save_segmentation_with_point, sam_segmentation_raw, show_segmentation_raw, save_segmentation_raw
-from medsam import get_medsam_predictor, image_preprocessing, medsam, show_medsam_seg, save_medsam_seg
-from evaluations import iou_score, dice_coefficient_score, hausdorff, hd95
+from .models.sam import get_sam_predictor
+from .models.medsam import get_medsam_predictor
+from .data.loader import get_mri, get_gt_layer, load_image_and_gt, find_instances
+from .data.preprocessing_steps import mri_layer_normalize
+from .prediction.sam_predict import sam_segmentation_with_bbox, sam_segmentation_with_point
+from .prediction.medsam_predict import medsam, medsam_image_preprocessing
+from .prediction.sam_visualize import show_segmentation_with_bbox, save_segmentation_with_bbox, show_segmentation_with_point, save_segmentation_with_point
+from .prediction.medsam_visualize import show_medsam_seg, save_medsam_seg
+from training.evaluations import iou_score, dice_coefficient_score, hausdorff, hd95
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-""" LAYER OPERATIONS """
-
-def _show_mri_layer(image, layer):
-    '''
-    Data (normalized image) Visualization (1 channel)
-    
-    :param image: Normalized MRI
-    :param layer: layer #
-    '''
-    plt.style.use('default')
-    plt.imshow(image[:, :, layer], cmap='gray', vmin=0, vmax=1)
-    plt.show()
-
-def _show_mri_rgb_layer(image, layer):
-    '''
-    Data (image) Visualization (3 channels)
-    
-    :param image: MRI
-    :param layer: layer #
-    '''
-    plt.style.use('default')
-    image_layer = image[:, :, layer]
-    modified_layer = _mri_normalize_layer(image_layer)
-    plt.imshow(modified_layer, vmin=0, vmax=1)
-    plt.show()
-
-def _save_mri_layer(image, layer, folder, image_name):
-    '''
-    Saves the grayscale MRI layer image
-    
-    :param image: Normalized MRI
-    :param layer: layer #
-    :param folder: Description
-    :param image_name: Description
-    '''
-    plt.style.use('default')
-    plt.imshow(image[:, :, layer], cmap='gray', vmin=0, vmax=1)
-    os.makedirs(os.path.join('output', folder), exist_ok=True)
-    plt.savefig(os.path.join('output', folder, f'{image_name}.png'))
-
-def _mri_normalize_layer(image_layer):
-    '''Normalizes an MRI image layer to value range [0, 1] and converts to RGB format (3 channels).'''
-    img_min, img_max = image_layer.min(), image_layer.max()
-    norm_layer = (image_layer - img_min) / (img_max - img_min)
-    rgb_layer = np.repeat(norm_layer[..., np.newaxis], 3, axis=2)
-    return rgb_layer
-
-def run_sam_seg_layer_raw(mri, layer):
-    '''
-    Runs SAM on a single layer.
-    '''
-    mask_gen = get_mask_generator()
-    image = _mri_normalize_layer(mri[:, :, layer])
-    masks = sam_segmentation_raw(mask_gen, image)
-    show_segmentation_raw(image, masks)
-    # return masks
+""" LAYER WISE SEGMENTATION FUNCTIONS """
 
 def run_sam_seg_layer_with_bbox(predictor, mri, layer, bbox):
     '''
     Runs SAM on a single layer and give a bounding box prompt.
     '''
     # predictor = get_predictor()
-    image = _mri_normalize_layer(mri[:, :, layer])
+    image = mri_layer_normalize(mri[:, :, layer])
     mask = sam_segmentation_with_bbox(predictor, image, bbox)
     # show_segmentation_with_bbox(image, mask, bbox)
     return mask
@@ -91,22 +38,23 @@ def run_sam_seg_layer_with_point(mri, layer, point, label):
     '''
     Runs SAM on a single layer and give a bounding box prompt.
     '''
-    predictor = get_predictor()
-    image = _mri_normalize_layer(mri[:, :, layer])
+    predictor = get_sam_predictor()
+    image = mri_layer_normalize(mri[:, :, layer])
     mask = sam_segmentation_with_point(predictor, image, point, label)
     return mask
 
 def run_medsam_seg_layer(medsam_model, mri, layer, bbox):
     # medsam_model = get_medsam_predictor(device)
-    image = _mri_normalize_layer(mri[:, :, layer])
-    img, box, h, w = image_preprocessing(image, bbox, device)
+    image = mri_layer_normalize(mri[:, :, layer])
+    img, box, h, w = medsam_image_preprocessing(image, bbox, device)
     mask = medsam(medsam_model, img, box, h, w)
     # show_medsam_seg(image, mask, bbox)
     return mask
 
+""" HELPER for foundation model input prompt """
 def get_bbox(image, margin=5, model='sam'):
     '''
-    Docstring for _get_bbox
+    Gets the bounding box of a MRI layer (1 channel) given the ground truth segmentation mask
     
     :param image: ground truth segmentation mask
     :param margin: int, the margin/padding around bounding box
@@ -136,138 +84,13 @@ def get_bbox(image, margin=5, model='sam'):
     else:
         raise ValueError(f'function _get_bbox param model must be sam or medsam, given {model}')
 
-""" MRI OPERATIONS """
-
-def get_mri(path, ret_type:str='map'):
-    '''
-    Docstring for get_mri
-    
-    :param path: path to .nii / .nii.gz file
-    :param ret_type: 'map' for a mapping of the mri file, or 'load' to load the mri directly to RAM
-    '''
-    if ret_type == 'map':
-        return nib.load(path).dataobj
-    elif ret_type == 'load':
-        return nib.load(path).get_fdata()
-    else:
-        raise ValueError(f'ret_type must be \'map\' or \'load\', but given {ret_type}')
-
-def mri_normalize(mri):
-    '''Normalizes an MRI entirely to value range [0, 1]'''
-    mri = np.maximum(mri, 0)
-    mri_min, mri_max = np.min(mri), np.max(mri)
-    normalized = (mri - mri_min) / (mri_max - mri_min)
-    return normalized
-
-def show_mri(mri):
-    """
-    Displays animated MRI.
-    
-    :param mri: normalized MRI as numpy array
-    """
-    fig, ax = plt.subplots()
-    im = ax.imshow(mri[:, :, 0], cmap='gray', animated=True, vmin=0, vmax=1)
-    title = ax.set_title("Slice 0")
-    # title = ax.text(0.5, 1.05, "Slice 0",
-    #                 ha='center', va='top',
-    #                 transform=ax.transAxes,
-    #                 animated=True)
-    ax.axis('off')
-
-    def update(frame):
-        im.set_array(mri[:, :, frame])
-        title.set_text(f"Slice {frame}")
-        return [im, title]
-
-    ani = FuncAnimation(
-        fig,
-        update,
-        frames = mri.shape[2],
-        interval=100,
-        # blit=True
-    )
-    plt.show()
-
-""" GROUND TRUTH OPERATIONS """
-
-def get_ground_truth_mri(mri):
-    pass
-
-def get_ground_truth_layer(mri, layer):
-    mri_image = mri[:, :, layer]
-    return mri_image.astype(bool)
-
-
-""" FILE STRUCTURE OPERATIONS """
-
-def load_image_and_gt(folder):
-    """
-    Given a leaf folder, load MRI + ground truth segmentation.
-    Prefers .npy if present, otherwise loads .nii.gz.
-    Returns (mri_img, gt_img) or Error.
-    """
-
-    files = os.listdir(folder)
-
-    # Use preprocessed npy files if they exist
-    npy_mri = None
-    npy_seg = None
-
-    for f in files:
-        if f.startswith("preprocessed") and "FLAIR" in f and f.endswith(".npy"):
-            npy_mri = os.path.join(folder, f)
-        if f.startswith("preprocessed") and "segmentation" in f and f.endswith(".npy"):
-            npy_seg = os.path.join(folder, f)
-
-    if npy_mri and npy_seg:
-        mri_img = np.load(npy_mri)
-        gt_img = np.load(npy_seg)
-        return mri_img, gt_img
-
-    # Fall back to .nii.gz
-    nii_mri = None
-    nii_seg = None
-
-    for f in files:
-        if f.endswith(".nii.gz") and "seg" in f:
-            nii_seg = os.path.join(folder, f)
-        elif f.endswith(".nii.gz") and ("t2f" in f or "flair" in f):
-            nii_mri = os.path.join(folder, f)
-
-    if nii_mri and nii_seg:
-        mri_img = get_mri(nii_mri)
-        gt_img = get_mri(nii_seg)
-        return mri_img, gt_img
-    raise RuntimeError(f"MRI files not found in folder {folder}")
-    # return None, None
-
-def find_instances(root):
-    """
-    Returns a list of tuples:
-    (instance_name, leaf_folder_path)
-    """
-    instances = []
-
-    for dirpath, dirnames, filenames in os.walk(root):
-        if filenames and not dirnames:
-            # Leaf folder found
-            if os.path.basename(dirpath) == "FLAIR":
-                instance_name = os.path.basename(os.path.dirname(dirpath))
-            else:
-                instance_name = os.path.basename(dirpath)
-
-            instances.append((instance_name, dirpath))
-
-    return instances
-
-
 """ MAIN FUNCTIONS """
 
 def sam_seg_main(parent_folder):
     ## Get runtime stamp
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
-    predictor = get_predictor(model='vit_b')
+    predictor = get_sam_predictor(model='vit_b')
 
     instance_folders = find_instances(parent_folder)
     dice_all = 0
@@ -298,7 +121,7 @@ def sam_seg_main(parent_folder):
             if segment_bbox is not None:
                 mask = run_sam_seg_layer_with_bbox(predictor, mri_img, segment_layer, segment_bbox)
 
-                gt_mask = get_ground_truth_layer(gt_img, segment_layer)
+                gt_mask = get_gt_layer(gt_img, segment_layer)
                 dice, iou, hdist, hd95_val = dice_coefficient_score(gt_mask, mask), iou_score(gt_mask, mask), hausdorff(gt_mask, mask), hd95(gt_mask, mask)
                 segmented += 1
                 dice_total += dice
@@ -373,9 +196,9 @@ def medsam_seg_main(parent_folder):
             if segment_bbox is not None:
                 mask = run_medsam_seg_layer(predictor, mri_img, segment_layer, segment_bbox)
                 # print(mask)
-                layer_image = _mri_normalize_layer(mri_img[:, :, segment_layer])
+                layer_image = mri_layer_normalize(mri_img[:, :, segment_layer])
 
-                gt_mask = get_ground_truth_layer(gt_img, segment_layer)
+                gt_mask = get_gt_layer(gt_img, segment_layer)
                 dice, iou, hdist, hd95_val = dice_coefficient_score(gt_mask, mask), iou_score(gt_mask, mask), hausdorff(gt_mask, mask), hd95(gt_mask, mask)
                 segmented += 1
                 dice_total += dice
